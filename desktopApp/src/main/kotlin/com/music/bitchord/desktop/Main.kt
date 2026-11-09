@@ -27,6 +27,10 @@ import kotlin.math.roundToInt
 import org.jetbrains.compose.resources.painterResource
 
 fun main() {
+    // First of all: AWT and JavaFX read their HiDPI scale once, when they start.
+    DesktopLinuxScale.install()
+    // Selaras is the equaliser: system-wide via its service on Linux, in BitChord's audio path elsewhere.
+    com.music.bitchord.selaras.Selaras.install(DesktopSelarasPlatform.create())
     // Before any WebView exists, so the sign-in window can start over with an empty jar.
     DesktopWebCookies.install()
     DesktopWindowVisibility.install()

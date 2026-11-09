@@ -1,21 +1,16 @@
-package com.music.bitchord.desktop
+package com.music.bitchord.selaras
 
 import java.io.File
 import java.net.HttpURLConnection
-import java.net.URI
+import java.net.URL
 import java.net.URLDecoder
 import java.net.URLEncoder
-import java.nio.charset.StandardCharsets
-import java.nio.file.Files
-import java.nio.file.StandardCopyOption
-import java.util.concurrent.TimeUnit
 import kotlin.math.PI
 import kotlin.math.cos
 import kotlin.math.ln
 import kotlin.math.log10
 import kotlin.math.log2
 import kotlin.math.max
-import kotlin.math.min
 import kotlin.math.pow
 import kotlin.math.roundToInt
 import kotlin.math.sin
@@ -28,7 +23,6 @@ import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
@@ -42,43 +36,56 @@ import kotlinx.serialization.json.doubleOrNull
 import kotlinx.serialization.json.longOrNull
 
 /**
- * BitChord's equaliser, handed over to Selaras.
+ * BitChord's equaliser is Selaras, on every device.
  *
- * Selaras is a system-wide PipeWire equaliser: a small daemon (`selaras-daemon`, run as the
- * `selaras.service` user unit) owns a filter-chain and rebuilds it whenever its state file changes
- * and it receives SIGHUP. That file is the whole interface, so BitChord edits the very same
- * `~/.config/selaras/state.json` the Selaras window and `selaras-ctl` do, and every one of them
- * stays in step with the others.
+ * Selaras keeps everything in one `state.json`: per-output settings, presets, AutoEq headphone
+ * profiles and options. This object holds that state, edits it the way the Selaras window does and
+ * writes it back. What *applies* it depends on the [SelarasPlatform]:
+ * - system-wide on Linux, where the Selaras daemon rebuilds its PipeWire filter-chain on SIGHUP;
+ * - in BitChord everywhere else, where every edit becomes a [SelarasDspConfig] that [SelarasDsp]
+ *   picks up on the audio thread.
  *
  * Everything here mirrors `selaras/model.py` and `selaras/actions.py`: the per-device settings,
  * the built-in presets, the band layout, the biquads drawn as the response curve and the AutoEq
  * lookup. Keys this side does not know about are carried through untouched.
  */
-internal object Selaras {
+object Selaras {
 
-    // ---- Locations, as selaras.model._dirs() and RUNTIME_DIR ----------------------------------
+    @Volatile private var platformOrNull: SelarasPlatform? = null
 
-    private val home = System.getProperty("user.home")
-    private val configDir = File(env("XDG_CONFIG_HOME") ?: "$home/.config", "selaras")
-    private val cacheDir = File(env("XDG_CACHE_HOME") ?: "$home/.cache", "selaras")
-    private val stateFile = File(configDir, "state.json")
-    private val runtimeDir = File(
-        env("SELARAS_RUNTIME_DIR") ?: ((env("XDG_RUNTIME_DIR") ?: System.getProperty("java.io.tmpdir")) + "/selaras"),
-    )
-    private val pidFile = File(runtimeDir, "daemon.pid")
+    /** The platform, once [install] has run. */
+    val platform: SelarasPlatform
+        get() = platformOrNull ?: error("Selaras.install() has not run")
 
-    private fun env(name: String) = System.getenv(name)?.takeIf { it.isNotBlank() }
+    val installed: Boolean get() = platformOrNull != null
 
-    private val isLinux = System.getProperty("os.name").contains("Linux", ignoreCase = true)
+    /** Whether BitChord itself applies the EQ (true everywhere but Linux with the daemon). */
+    val inApp: Boolean get() = platformOrNull?.systemWide == false
 
-    /** Finds a Selaras command on PATH, or where a per-user or packaged install puts it. */
-    fun executable(name: String): File? {
-        val dirs = (System.getenv("PATH") ?: "").split(File.pathSeparator) + listOf("$home/.local/bin", "/usr/bin", "/usr/local/bin")
-        return dirs.asSequence().filter { it.isNotBlank() }.map { File(it, name) }.firstOrNull { it.canExecute() }
+    /** Live spectrum and meters for the page. */
+    val spectrum = SelarasSpectrum()
+
+    /**
+     * What [SelarasDsp] runs, or null when it should stay out of the way (system-wide mode, or
+     * before the state is read).
+     */
+    @Volatile var dspConfig: SelarasDspConfig? = null
+        private set
+
+    /** Sets up Selaras for this device and reads its state in the background. Idempotent. */
+    fun install(platform: SelarasPlatform) {
+        synchronized(lock) {
+            if (platformOrNull != null) return
+            platformOrNull = platform
+        }
+        scope.launch { refresh(force = true) }
     }
 
-    /** Whether this machine has Selaras at all. Without it BitChord keeps its own equaliser. */
-    val installed: Boolean by lazy { isLinux && executable("selaras-daemon") != null }
+    /** The output changed: re-read which device is playing, so its own EQ takes over. */
+    fun deviceChanged() {
+        if (platformOrNull == null) return
+        scope.launch { refresh() }
+    }
 
     // ---- Constants, as selaras.model ------------------------------------------------------------
 
@@ -183,19 +190,23 @@ internal object Selaras {
     /** Set by an edit until the writer has put it on disk, so a poll never reloads over it. */
     private var dirty = false
 
+    private val stateFile: File get() = platform.stateFile
+
     /** Re-reads the file and the current output. Cheap enough to call every couple of seconds. */
     suspend fun refresh(force: Boolean = false) = withContext(Dispatchers.IO) {
-        val (key, name) = currentDevice()
-        val modified = stateFile.lastModified()
+        val p = platformOrNull ?: return@withContext
+        val device = runCatching { p.currentDevice() }.getOrDefault(SelarasDevice(null, "No output"))
+        val modified = p.stateFile.lastModified()
         synchronized(lock) {
             if (!dirty && (force || modified != lastSeenModified || _state.value == null)) {
                 root = loadState()
                 lastSeenModified = modified
             }
-            deviceKey = key
-            deviceName = name
+            deviceKey = device.key
+            deviceName = device.name
             // As the Selaras window does, so Devices can show a name rather than a sink id.
-            if (key != null && root.selMap("device_names")[key] != name) root.mmap("device_names")[key] = name
+            val key = device.key
+            if (key != null && root.selMap("device_names")[key] != device.name) root.mmap("device_names")[key] = device.name
             publish()
         }
     }
@@ -232,12 +243,37 @@ internal object Selaras {
 
     private fun publish() {
         revision++
-        _state.value = Snapshot(deepCopy(root), deviceKey, deviceName, daemonPid() != null, revision)
+        val p = platformOrNull
+        _state.value = Snapshot(deepCopy(root), deviceKey, deviceName, p?.engineRunning() ?: false, revision)
+        dspConfig = if (p == null || p.systemWide) null else buildDspConfig(root, settingsFor(root, deviceKey))
+    }
+
+    /** The audio thread's view of the current output's settings. */
+    private fun buildDspConfig(root: Map<String, Any?>, s: Map<String, Any?>): SelarasDspConfig {
+        val profiles = root.selMap("profiles")
+        val pre = 10.0.pow(totalPreamp(s, profiles) / 20)
+        val bal = s.selDouble("balance", 0.0).coerceIn(-100.0, 100.0) / 100
+        val lim = s.selMap("limiter")
+        val comp = s.selMap("compressor")
+        return SelarasDspConfig(
+            enabled = root.selBool("enabled", true),
+            filters = filterList(s, profiles).map { SelarasFilter(it.label, it.freq, it.q, it.gain) },
+            gainL = pre * (1 - max(0.0, bal)),
+            gainR = pre * (1 - max(0.0, -bal)),
+            limiter = lim.selBool("enabled", true),
+            limiterDb = lim.selDouble("threshold", -1.0).coerceIn(-24.0, 0.0),
+            compressor = comp.selBool("enabled", false),
+            compThresholdDb = comp.selDouble("threshold", -22.0),
+            compRatio = comp.selDouble("ratio", 3.0),
+            compAttackMs = comp.selDouble("attack", 15.0),
+            compReleaseMs = comp.selDouble("release", 150.0),
+            compMakeupDb = comp.selDouble("makeup", 4.0),
+        )
     }
 
     /**
      * Writes coalesced to one every 40 ms, as the Selaras window does: a band dragged across its
-     * whole travel is a few dozen states, and only the last of each burst needs to reach PipeWire.
+     * whole travel is a few dozen states, and only the last of each burst needs to reach the engine.
      */
     private fun ensureWriter() {
         if (writer?.isActive == true) return
@@ -248,88 +284,36 @@ internal object Selaras {
                     encode(root)
                 }
                 runCatching {
-                    configDir.mkdirs()
-                    val tmp = File(configDir, "state.tmp")
-                    tmp.writeText(text, StandardCharsets.UTF_8)
-                    Files.move(tmp.toPath(), stateFile.toPath(), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
-                    synchronized(lock) { lastSeenModified = stateFile.lastModified() }
+                    val file = stateFile
+                    val dir = file.absoluteFile.parentFile
+                    dir.mkdirs()
+                    val tmp = File(dir, file.name + ".tmp")
+                    tmp.writeText(text, Charsets.UTF_8)
+                    if (!tmp.renameTo(file)) {
+                        file.delete()
+                        tmp.renameTo(file)
+                    }
+                    synchronized(lock) { lastSeenModified = file.lastModified() }
                 }
-                signalDaemon()
+                runCatching { platform.afterWrite() }
                 delay(40)
             }
         }
     }
 
-    // ---- The daemon -----------------------------------------------------------------------------
+    // ---- The engine -----------------------------------------------------------------------------
 
-    private fun daemonPid(): Long? = runCatching {
-        val pid = pidFile.readText().trim().toLong()
-        val cmdline = File("/proc/$pid/cmdline").readBytes().toString(StandardCharsets.UTF_8)
-        pid.takeIf { "selaras" in cmdline }
-    }.getOrNull()
-
-    private fun signalDaemon() {
-        val pid = daemonPid() ?: return
-        exec(listOf("kill", "-HUP", pid.toString()))
-    }
-
-    /** Starts the service, or the bare daemon where there is no user unit for it. */
+    /** Starts the external engine (system-wide mode) and re-reads the state. */
     suspend fun startDaemon() = withContext(Dispatchers.IO) {
-        val viaSystemd = executable("systemctl") != null &&
-            exec(listOf("systemctl", "--user", "start", "selaras.service")) != null &&
-            exec(listOf("systemctl", "--user", "is-active", "selaras.service"))?.trim() == "active"
-        if (!viaSystemd) {
-            executable("selaras-daemon")?.let {
-                runCatching { ProcessBuilder(it.path).redirectErrorStream(true).redirectOutput(ProcessBuilder.Redirect.DISCARD).start() }
-            }
-        }
+        platformOrNull?.startEngine()
         delay(800)
         refresh(force = true)
     }
 
-    /** Opens the full Selaras window, for what this page leaves out (parametric EQ, layouts, skins). */
+    /** Opens the full Selaras window, where it is installed. */
     fun openApp(vararg args: String) {
-        val exe = executable("selaras") ?: return
-        runCatching {
-            ProcessBuilder(listOf(exe.path) + args).redirectErrorStream(true)
-                .redirectOutput(ProcessBuilder.Redirect.DISCARD).start()
-        }
+        platformOrNull?.openApp(*args)
     }
-
-    // ---- Devices, as selaras.model.current_device -----------------------------------------------
-
-    private fun currentDevice(): Pair<String?, String> {
-        val name = exec(listOf("pactl", "get-default-sink"))?.trim()?.takeIf { it.isNotEmpty() }
-            ?: return null to "No output"
-        var desc = name
-        var port: String? = null
-        runCatching {
-            val sinks = Json.parseToJsonElement(exec(listOf("pactl", "-f", "json", "list", "sinks")) ?: "[]")
-            for (sink in (sinks as? JsonArray).orEmpty()) {
-                val s = sink as? JsonObject ?: continue
-                if ((s["name"] as? JsonPrimitive)?.content != name) continue
-                desc = (s["description"] as? JsonPrimitive)?.content ?: name
-                port = (s["active_port"] as? JsonPrimitive)?.takeIf { it !is JsonNull }?.content
-                for (p in (s["ports"] as? JsonArray).orEmpty()) {
-                    val po = p as? JsonObject ?: continue
-                    val pd = (po["description"] as? JsonPrimitive)?.content
-                    if ((po["name"] as? JsonPrimitive)?.content == port && !pd.isNullOrBlank()) desc = "$desc · $pd"
-                }
-            }
-        }
-        return (if (port != null) "$name#$port" else name) to desc
-    }
-
-    private fun exec(cmd: List<String>): String? = runCatching {
-        val proc = ProcessBuilder(cmd).redirectErrorStream(false).start()
-        val out = proc.inputStream.bufferedReader().readText()
-        if (!proc.waitFor(5, TimeUnit.SECONDS)) {
-            proc.destroyForcibly()
-            null
-        } else {
-            out
-        }
-    }.getOrNull()
 
     // ---- Persistence, as selaras.model.load_state ----------------------------------------------
 
@@ -337,7 +321,7 @@ internal object Selaras {
         val state = defaultState()
         runCatching {
             @Suppress("UNCHECKED_CAST")
-            val data = fromJson(Json.parseToJsonElement(stateFile.readText(StandardCharsets.UTF_8))) as? MutableMap<String, Any?>
+            val data = fromJson(Json.parseToJsonElement(stateFile.readText(Charsets.UTF_8))) as? MutableMap<String, Any?>
             if (data != null) {
                 val opts = (state["options"] as MutableMap<String, Any?>) + data.selMap("options")
                 state.putAll(data)
@@ -447,9 +431,9 @@ internal object Selaras {
         }
     }
 
-    private data class Biquad(val label: String, val freq: Double, val q: Double, val gain: Double)
+    internal data class Biquad(val label: String, val freq: Double, val q: Double, val gain: Double)
 
-    private fun filterList(s: Map<String, Any?>, profiles: Map<String, Any?>): List<Biquad> {
+    internal fun filterList(s: Map<String, Any?>, profiles: Map<String, Any?>): List<Biquad> {
         val out = mutableListOf(
             Biquad("bq_lowshelf", s.selDouble("bass_freq", 100.0), SHELF_Q, s.selDouble("bass", 0.0)),
             Biquad("bq_highshelf", s.selDouble("treble_freq", 8000.0), SHELF_Q, s.selDouble("treble", 0.0)),
@@ -472,30 +456,7 @@ internal object Selaras {
         return out
     }
 
-    private fun coeffs(b: Biquad): DoubleArray {
-        val a = 10.0.pow(b.gain / 40)
-        val w0 = 2 * PI * min(b.freq, SAMPLE_RATE * 0.499) / SAMPLE_RATE
-        val cw = cos(w0)
-        val sw = sin(w0)
-        val alpha = sw / (2 * max(b.q, 1e-3))
-        val sa = 2 * sqrt(a) * alpha
-        return when (b.label) {
-            "bq_peaking" -> doubleArrayOf(1 + alpha * a, -2 * cw, 1 - alpha * a, 1 + alpha / a, -2 * cw, 1 - alpha / a)
-            "bq_lowpass" -> doubleArrayOf((1 - cw) / 2, 1 - cw, (1 - cw) / 2, 1 + alpha, -2 * cw, 1 - alpha)
-            "bq_highpass" -> doubleArrayOf((1 + cw) / 2, -(1 + cw), (1 + cw) / 2, 1 + alpha, -2 * cw, 1 - alpha)
-            "bq_notch" -> doubleArrayOf(1.0, -2 * cw, 1.0, 1 + alpha, -2 * cw, 1 - alpha)
-            "bq_lowshelf" -> doubleArrayOf(
-                a * ((a + 1) - (a - 1) * cw + sa), 2 * a * ((a - 1) - (a + 1) * cw),
-                a * ((a + 1) - (a - 1) * cw - sa), (a + 1) + (a - 1) * cw + sa,
-                -2 * ((a - 1) + (a + 1) * cw), (a + 1) + (a - 1) * cw - sa,
-            )
-            else -> doubleArrayOf(
-                a * ((a + 1) + (a - 1) * cw + sa), -2 * a * ((a - 1) + (a + 1) * cw),
-                a * ((a + 1) + (a - 1) * cw - sa), (a + 1) - (a - 1) * cw + sa,
-                2 * ((a - 1) - (a + 1) * cw), (a + 1) - (a - 1) * cw - sa,
-            )
-        }
-    }
+    private fun coeffs(b: Biquad): DoubleArray = selarasBiquad(b.label, b.freq, b.q, b.gain, SAMPLE_RATE)
 
     private fun magDb(c: DoubleArray, f: Double): Double {
         val w = 2 * PI * f / SAMPLE_RATE
@@ -536,7 +497,7 @@ internal object Selaras {
     }
 
     private const val AUTOEQ_RAW = "https://raw.githubusercontent.com/jaakkopasanen/AutoEq/master/results/"
-    private val ENTRY = Regex("""^- \[(?<name>.+?)\]\(\./(?<path>.+)\) by (?<source>.+)$""")
+    private val ENTRY = Regex("""^- \[(.+?)\]\(\./(.+)\) by (.+)$""")
     private val FILTER_RE = Regex(
         """Filter\s*\d*:\s*(ON|OFF)\s+([A-Z]+)\s+Fc\s+([\d.]+)\s*Hz(?:\s+Gain\s+(-?[\d.]+)\s*dB)?(?:\s+Q\s+([\d.]+))?""",
         RegexOption.IGNORE_CASE,
@@ -545,13 +506,13 @@ internal object Selaras {
     private var index: List<AutoEqEntry>? = null
 
     private fun httpGet(url: String): String {
-        val conn = URI(url).toURL().openConnection() as HttpURLConnection
+        val conn = URL(url).openConnection() as HttpURLConnection
         conn.connectTimeout = 20_000
         conn.readTimeout = 20_000
         conn.setRequestProperty("User-Agent", "Selaras-Equalizer")
         try {
             if (conn.responseCode !in 200..299) error("HTTP ${conn.responseCode}")
-            return conn.inputStream.bufferedReader(StandardCharsets.UTF_8).readText()
+            return conn.inputStream.bufferedReader(Charsets.UTF_8).readText()
         } finally {
             conn.disconnect()
         }
@@ -560,20 +521,21 @@ internal object Selaras {
     /** The AutoEq results index, cached where Selaras caches it and refreshed weekly. */
     suspend fun autoEqIndex(): List<AutoEqEntry> = withContext(Dispatchers.IO) {
         index?.let { return@withContext it }
+        val cacheDir = platform.cacheDir
         val file = File(cacheDir, "autoeq-index.md")
         val fresh = file.exists() && System.currentTimeMillis() - file.lastModified() < 7L * 24 * 3600 * 1000
         if (!fresh) {
             try {
                 val text = httpGet(AUTOEQ_RAW + "INDEX.md")
                 cacheDir.mkdirs()
-                file.writeText(text, StandardCharsets.UTF_8)
+                file.writeText(text, Charsets.UTF_8)
             } catch (e: Exception) {
                 if (!file.exists()) throw e
             }
         }
-        file.readLines(StandardCharsets.UTF_8).mapNotNull { line ->
+        file.readLines(Charsets.UTF_8).mapNotNull { line ->
             ENTRY.matchEntire(line.trim())?.let {
-                AutoEqEntry(it.groups["name"]!!.value, it.groups["path"]!!.value, it.groups["source"]!!.value)
+                AutoEqEntry(it.groupValues[1], it.groupValues[2], it.groupValues[3])
             }
         }.also { index = it }
     }
@@ -589,10 +551,10 @@ internal object Selaras {
 
     /** Downloads the entry's ParametricEQ.txt and keeps it as a Selaras headphone profile. */
     suspend fun installProfile(entry: AutoEqEntry) = withContext(Dispatchers.IO) {
-        val folder = URLDecoder.decode(entry.path, StandardCharsets.UTF_8)
+        val folder = URLDecoder.decode(entry.path, "UTF-8")
         val leaf = folder.substringAfterLast('/')
         val encoded = "$folder/$leaf ParametricEQ.txt".split('/')
-            .joinToString("/") { URLEncoder.encode(it, StandardCharsets.UTF_8).replace("+", "%20") }
+            .joinToString("/") { URLEncoder.encode(it, "UTF-8").replace("+", "%20") }
         val profile = parseAutoEq(httpGet(AUTOEQ_RAW + encoded))
         edit { root, s ->
             root.mmap("profiles")[entry.profileName] = profile
@@ -618,26 +580,15 @@ internal object Selaras {
 
     // ---- Capabilities -----------------------------------------------------------------------------
 
-    private fun lv2Paths() = (env("LV2_PATH")?.split(":")?.filter { it.isNotBlank() } ?: emptyList()) +
-        listOf("/usr/lib/lv2", "/usr/lib64/lv2", "/usr/local/lib/lv2", "/usr/local/lib64/lv2", "$home/.lv2")
+    /** Limiter and compressor: always in-app; in system-wide mode only with the LV2 plugins. */
+    val dynamicsAvailable: Boolean get() = platformOrNull?.dynamicsAvailable ?: true
 
-    /** Limiter and compressor are LSP plugins; without them the daemon leaves both out of the chain. */
-    val dynamicsAvailable: Boolean
-        get() = lv2Paths().any { File(it, "lsp-plugins.lv2/limiter_stereo.ttl").exists() }
+    /** The projectM visualizer of the Selaras window, where that is installed. */
+    val visualizerAvailable: Boolean get() = platformOrNull?.visualizerAvailable ?: false
 
-    /** The visualizer is libprojectM 4, drawn by the Selaras window. */
-    val visualizerAvailable: Boolean by lazy {
-        listOf("/usr/lib64", "/usr/lib", "/usr/local/lib", "/usr/local/lib64", "/usr/lib/x86_64-linux-gnu")
-            .any { File(it, "libprojectM-4.so.4").exists() }
-    }
+    suspend fun loginEnabled(): Boolean? = withContext(Dispatchers.IO) { platformOrNull?.loginEnabled() }
 
-    suspend fun loginEnabled(): Boolean = withContext(Dispatchers.IO) {
-        exec(listOf("systemctl", "--user", "is-enabled", "selaras.service"))?.trim() == "enabled"
-    }
-
-    suspend fun setLogin(on: Boolean) = withContext(Dispatchers.IO) {
-        exec(listOf("systemctl", "--user", if (on) "enable" else "disable", "selaras.service"))
-    }
+    suspend fun setLogin(on: Boolean) = withContext(Dispatchers.IO) { platformOrNull?.setLogin(on) }
 
     // ---- Actions, as selaras.actions ------------------------------------------------------------
 
@@ -858,10 +809,11 @@ internal object Selaras {
 
     fun selectProfile(name: String?) = edit { _, s -> s["profile"] = name }
 
-    fun importProfileFile(file: File): String {
-        val profile = parseAutoEq(file.readText(StandardCharsets.UTF_8))
-        val stem = file.nameWithoutExtension
-        val name = stem.replace(Regex("""\s*ParametricEQ$"""), "").trim().ifEmpty { stem }
+    /** Keeps an AutoEq `ParametricEQ.txt` as a headphone profile named after its file, and uses it. */
+    fun importProfileText(fileName: String, text: String): String {
+        val profile = parseAutoEq(text)
+        val stem = fileName.substringAfterLast('/').substringAfterLast('\\').substringBeforeLast('.')
+        val name = stem.replace(Regex("""\s*ParametricEQ$"""), "").trim().ifEmpty { stem.ifEmpty { "Imported profile" } }
         edit { root, s ->
             root.mmap("profiles")[name] = profile
             s["profile"] = name
@@ -902,160 +854,14 @@ internal object Selaras {
 
     fun forgetDevice(key: String) = editState { root -> root.mmap("devices").remove(key) }
 
-    /** The Selaras window's skin file, created with a comment the first time. */
+    /** The Selaras window's skin file, where that window exists. */
     fun openSkin() {
-        val skin = File(configDir, "style.css")
-        runCatching {
-            if (!skin.exists()) {
-                configDir.mkdirs()
-                skin.writeText("/* Selaras skin: GTK4 CSS, loaded on start (Settings › Advanced › Reload). */\n")
-            }
-            ProcessBuilder("xdg-open", skin.path).start()
-        }
+        platformOrNull?.openSkin()
     }
-    val skinPath: String get() = File(configDir, "style.css").path
+    val skinPath: String? get() = platformOrNull?.skinPath
 
-    /** KDE's shortcut settings where they exist, GNOME's keyboard panel otherwise. */
-    fun openShortcutSettings(): Boolean {
-        for (cmd in listOf(listOf("systemsettings", "kcm_keys"), listOf("kcmshell6", "kcm_keys"), listOf("gnome-control-center", "keyboard"))) {
-            if (executable(cmd[0]) != null) {
-                runCatching { ProcessBuilder(cmd).start() }
-                return true
-            }
-        }
-        return false
-    }
-
-    // ---- Live spectrum and meters, as selaras.spectrum -------------------------------------------
-
-    /** Reads the default sink's monitor through parec while the page is open. */
-    object Spectrum {
-        const val BARS = 64
-        private const val RATE = 48000
-        private const val N = 2048
-        private const val LO = 20.0
-        private const val HI = 20000.0
-
-        val barFreqs = List(BARS) { LO * (HI / LO).pow((it + 0.5) / BARS) }
-        private val edges = DoubleArray(BARS + 1) { LO * (HI / LO).pow(it.toDouble() / BARS) }
-        private val window = DoubleArray(N) { 0.5 - 0.5 * cos(2 * PI * it / (N - 1)) }
-
-        @Volatile var levels = DoubleArray(BARS) { -90.0 }
-            private set
-        @Volatile var levelL = -90.0
-            private set
-        @Volatile var levelR = -90.0
-            private set
-
-        @Volatile private var proc: Process? = null
-        private var users = 0
-
-        @Synchronized fun start() {
-            users++
-            if (proc != null) return
-            val p = runCatching {
-                ProcessBuilder(
-                    "parec", "-d", "@DEFAULT_MONITOR@", "--raw", "--format=float32le", "--channels=2",
-                    "--rate=$RATE", "--latency-msec=30", "--client-name=BitChord Selaras spectrum", "--stream-name=Spectrum",
-                ).redirectError(ProcessBuilder.Redirect.DISCARD).start()
-            }.getOrNull() ?: return
-            proc = p
-            Thread({ loop(p) }, "selaras-spectrum").apply { isDaemon = true }.start()
-        }
-
-        @Synchronized fun stop() {
-            users = (users - 1).coerceAtLeast(0)
-            if (users > 0) return
-            proc?.destroy()
-            proc = null
-            levels = DoubleArray(BARS) { -90.0 }
-            levelL = -90.0
-            levelR = -90.0
-        }
-
-        private fun loop(p: Process) {
-            val hop = N / 2
-            val buf = DoubleArray(N)
-            val raw = ByteArray(hop * 8)
-            val input = p.inputStream
-            val re = DoubleArray(N)
-            val im = DoubleArray(N)
-            try {
-                while (proc === p) {
-                    var read = 0
-                    while (read < raw.size) {
-                        val n = input.read(raw, read, raw.size - read)
-                        if (n < 0) return
-                        read += n
-                    }
-                    val bb = java.nio.ByteBuffer.wrap(raw).order(java.nio.ByteOrder.LITTLE_ENDIAN)
-                    var peakL = 0.0
-                    var peakR = 0.0
-                    System.arraycopy(buf, hop, buf, 0, N - hop)
-                    for (i in 0 until hop) {
-                        val l = bb.getFloat(i * 8).toDouble()
-                        val r = bb.getFloat(i * 8 + 4).toDouble()
-                        peakL = max(peakL, kotlin.math.abs(l))
-                        peakR = max(peakR, kotlin.math.abs(r))
-                        buf[N - hop + i] = (l + r) * 0.5
-                    }
-                    levelL = max(20 * log10(max(peakL, 1e-5)), levelL - 1.5)
-                    levelR = max(20 * log10(max(peakR, 1e-5)), levelR - 1.5)
-                    for (i in 0 until N) {
-                        re[i] = buf[i] * window[i]
-                        im[i] = 0.0
-                    }
-                    fft(re, im)
-                    val old = levels
-                    levels = DoubleArray(BARS) { b ->
-                        val lo = (edges[b] * N / RATE).toInt()
-                        val hi = max(lo + 1, (edges[b + 1] * N / RATE).toInt())
-                        var peak = 0.0
-                        for (k in lo until min(hi, N / 2)) peak = max(peak, sqrt(re[k] * re[k] + im[k] * im[k]))
-                        max(20 * log10(peak / (N / 4) + 1e-9), old[b] - 2.5)
-                    }
-                }
-            } catch (_: Exception) {
-            } finally {
-                p.destroy()
-            }
-        }
-
-        private fun fft(re: DoubleArray, im: DoubleArray) {
-            val n = re.size
-            var j = 0
-            for (i in 1 until n) {
-                var bit = n shr 1
-                while (j and bit != 0) {
-                    j = j xor bit
-                    bit = bit shr 1
-                }
-                j = j or bit
-                if (i < j) {
-                    var t = re[i]; re[i] = re[j]; re[j] = t
-                    t = im[i]; im[i] = im[j]; im[j] = t
-                }
-            }
-            var size = 2
-            while (size <= n) {
-                val half = size / 2
-                val ang = -2 * PI / size
-                for (start in 0 until n step size) {
-                    for (k in 0 until half) {
-                        val wr = cos(ang * k)
-                        val wi = sin(ang * k)
-                        val ar = re[start + k + half] * wr - im[start + k + half] * wi
-                        val ai = re[start + k + half] * wi + im[start + k + half] * wr
-                        re[start + k + half] = re[start + k] - ar
-                        im[start + k + half] = im[start + k] - ai
-                        re[start + k] += ar
-                        im[start + k] += ai
-                    }
-                }
-                size *= 2
-            }
-        }
-    }
+    /** The desktop's own keyboard-shortcut settings, where the Selaras service registers its keys. */
+    fun openShortcutSettings(): Boolean = platformOrNull?.openShortcutSettings() ?: false
 
     // ---- JSON <-> plain maps --------------------------------------------------------------------
 
@@ -1106,9 +912,9 @@ private fun Map<*, *>.asMap() = this as Map<String, Any?>
 private fun MutableMap<String, Any?>.mmap(key: String): MutableMap<String, Any?> =
     (this[key] as? MutableMap<String, Any?>) ?: mutableMapOf<String, Any?>().also { this[key] = it }
 
-internal fun Map<String, Any?>.selMap(key: String): Map<String, Any?> = (this[key] as? Map<*, *>)?.asMap() ?: emptyMap()
-internal fun Map<String, Any?>.selList(key: String): List<Any?> = this[key] as? List<Any?> ?: emptyList()
-internal fun Map<String, Any?>.selDouble(key: String, default: Double) = (this[key] as? Number)?.toDouble() ?: default
-internal fun Map<String, Any?>.selInt(key: String, default: Int) = (this[key] as? Number)?.toInt() ?: default
-internal fun Map<String, Any?>.selBool(key: String, default: Boolean) = this[key] as? Boolean ?: default
-internal fun Map<String, Any?>.selDoubles(key: String) = selList(key).map { (it as? Number)?.toDouble() ?: 0.0 }
+fun Map<String, Any?>.selMap(key: String): Map<String, Any?> = (this[key] as? Map<*, *>)?.asMap() ?: emptyMap()
+fun Map<String, Any?>.selList(key: String): List<Any?> = this[key] as? List<Any?> ?: emptyList()
+fun Map<String, Any?>.selDouble(key: String, default: Double) = (this[key] as? Number)?.toDouble() ?: default
+fun Map<String, Any?>.selInt(key: String, default: Int) = (this[key] as? Number)?.toInt() ?: default
+fun Map<String, Any?>.selBool(key: String, default: Boolean) = this[key] as? Boolean ?: default
+fun Map<String, Any?>.selDoubles(key: String) = selList(key).map { (it as? Number)?.toDouble() ?: 0.0 }

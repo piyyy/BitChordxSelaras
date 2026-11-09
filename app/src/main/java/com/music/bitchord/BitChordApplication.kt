@@ -53,6 +53,8 @@ class BitChordApplication : Application(), SingletonImageLoader.Factory {
         AndroidStreamHooks.installEarly()
         PlayerPlatform.install(AndroidPlayerHost(this))
         com.music.bitchord.ui.AppUi.install(com.music.bitchord.ui.AndroidAppUiHost)
+        // Selaras is the equaliser, running in BitChord's own audio path (see DspChain).
+        com.music.bitchord.selaras.AndroidSelarasPlatform.install(this)
         // The shared data layer (lyrics, the YouTube Music client) logs to
         // logcat on debug builds only, as the app's own DebugLog always has.
         if (BuildConfig.DEBUG) {

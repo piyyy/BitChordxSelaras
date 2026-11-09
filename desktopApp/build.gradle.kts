@@ -70,6 +70,7 @@ dependencies {
     implementation(project(":shared"))
     // Its own copy of the player and pages; the phone and TV keep :sharedUi.
     implementation(project(":desktopUi"))
+    implementation(project(":selarasUi"))
     // BotGuard, for the PoTokens YouTube's web clients need: the phone runs it in an Android
     // WebView, the desktop in JavaFX's (WebKit). Per-platform jars carry the natives.
     val javafxClassifier = when (targetOs) {

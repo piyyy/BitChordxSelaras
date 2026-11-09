@@ -1,5 +1,6 @@
 package com.music.bitchord.desktop
 
+import com.music.bitchord.selaras.Selaras
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -75,7 +76,8 @@ internal fun DesktopAudioPipelineDialog(
                 PipelineRow(
                     DesktopStrings["equalizer", "Equalizer"],
                     when {
-                        Selaras.installed -> "Selaras · system-wide, after BitChord"
+                        Selaras.installed && Selaras.platform.systemWide -> "Selaras · system-wide, after BitChord"
+                        Selaras.installed -> "Selaras · " + (if (Selaras.state.value?.enabled == true) DesktopStrings["on", "On"] else DesktopStrings["off", "Off"])
                         pipeline.equalizerEnabled -> DesktopStrings["on", "On"]
                         else -> DesktopStrings["off", "Off"]
                     },

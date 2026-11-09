@@ -6,12 +6,18 @@ import com.music.bitchord.playback.EqualizerProcessor
 import com.music.bitchord.playback.LoudnessProcessor
 import com.music.bitchord.playback.SpatialAudioProcessor
 import com.music.bitchord.playback.TransitionFilterProcessor
+import com.music.bitchord.selaras.Selaras
+import com.music.bitchord.selaras.SelarasDsp
 
 /**
  * Composite DSP chain executing BitChord's custom audio processors in their canonical sequence:
  *
- * AudioBlock(Float32) -> SpatialAudioProcessor -> EqualizerProcessor
+ * AudioBlock(Float32) -> SpatialAudioProcessor -> Selaras (or the old EqualizerProcessor)
  *   -> TransitionFilterProcessor -> LoudnessProcessor -> AudioBlock(Float32)
+ *
+ * Selaras is the listener's equaliser: the same engine, presets and AutoEq headphone profiles as
+ * on the desktop. While it is installed the older [EqualizerProcessor] stands aside, so the sound is
+ * never shaped twice.
  *
  * Operates purely on in-place Float32 audio blocks without intermediate fixed-point quantization,
  * preserving full dynamic range and headroom.
@@ -36,6 +42,7 @@ class DspChain(
     val equalizer: EqualizerProcessor = EqualizerProcessor(),
     val transition: TransitionFilterProcessor = TransitionFilterProcessor(),
     val loudness: LoudnessProcessor = LoudnessProcessor(),
+    val selaras: SelarasDsp = SelarasDsp(),
 ) : FloatAudioProcessor {
 
     private var currentSampleRate: Int = 0
@@ -45,6 +52,7 @@ class DspChain(
         this.currentSampleRate = sampleRate
         spatial.configure(sampleRate, channelCount)
         equalizer.configure(sampleRate, channelCount)
+        selaras.configure(sampleRate, channelCount)
         transition.configure(sampleRate, channelCount)
         loudness.configure(sampleRate, channelCount)
     }
@@ -78,11 +86,15 @@ class DspChain(
         }
 
         spatial.process(block)
-        equalizer.process(block)
+        if (Selaras.installed) {
+            selaras.process(block.samples, 0, block.frameCount)
+        } else {
+            equalizer.process(block)
+        }
         transition.process(block)
         // The equaliser leaves its overs in place for the stages after it to
         // see; the loudness stage's limiter is what catches whatever survives.
-        loudness.holdLimiter = equalizer.isShaping
+        loudness.holdLimiter = if (Selaras.installed) selaras.isShaping else equalizer.isShaping
         loudness.process(block)
     }
 
@@ -98,6 +110,7 @@ class DspChain(
         processCounter = 0L
         spatial.reset()
         equalizer.reset()
+        selaras.reset()
         transition.reset()
         loudness.reset()
     }

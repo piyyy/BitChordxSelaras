@@ -24,8 +24,11 @@ val CMP_DESKTOP =
     // Haze 1.7.x, which the Windows build uses (see desktopApp/build.gradle.kts), was compiled
     // against a ShaderBrush.createShader that returns skia's Shader; 1.12 changed that return
     // type, so on 1.12 every blur dies with NoSuchMethodError. Windows stays on the plugin's
-    // own 1.10.3 / skiko 0.9; only Linux moves to 1.12.
-    if (System.getProperty("os.name").contains("Windows", ignoreCase = true)) "1.10.3" else "1.12.0"
+    // own 1.10.3 / skiko 0.9; only Linux moves to 1.12. Decided by the platform being built *for*,
+    // so a Windows build cross-assembled on Linux (windowsPortable) gets Windows' versions too.
+    if ((providers.gradleProperty("bitchord.target").orNull ?: System.getProperty("os.name"))
+            .contains("Windows", ignoreCase = true)
+    ) "1.10.3" else "1.12.0"
 
 plugins {
     id("org.jetbrains.kotlin.multiplatform")

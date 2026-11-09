@@ -2852,7 +2852,7 @@ private fun BitChordApp(
                             onEditServer = { editingPartyServer = true },
                         )
                     } else if (key == "equalizer") {
-                        EqualizerScreen(contentPadding = listPadding)
+                        com.music.bitchord.selaras.ui.SelarasScreen(contentPadding = listPadding)
                     } else if (key == "settings") {
                         SettingsScreen(
                             windowWidth = windowWidth,
@@ -3461,7 +3461,7 @@ private fun BitChordApp(
                             modifier = Modifier.fillMaxSize(),
                             color = MaterialTheme.colorScheme.background,
                         ) {
-                            EqualizerScreen(contentPadding = listPadding)
+                            com.music.bitchord.selaras.ui.SelarasScreen(contentPadding = listPadding)
                         }
                     }
                     "replay" -> {

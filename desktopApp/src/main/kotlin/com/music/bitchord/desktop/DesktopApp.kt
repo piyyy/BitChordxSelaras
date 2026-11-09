@@ -1,5 +1,6 @@
 package com.music.bitchord.desktop
 
+import com.music.bitchord.selaras.Selaras
 import androidx.compose.foundation.lazy.LazyListState
 import com.music.bitchord.ui.components.LocalShelfRowChrome
 import com.music.bitchord.ui.components.ShelfRowChrome
@@ -1762,8 +1763,8 @@ fun BitChordDesktopApp() {
     val eqBalance by DesktopEqualizerSettings.balance.collectAsState()
     val eqBands by DesktopEqualizerSettings.bands.collectAsState()
     LaunchedEffect(eqEnabled, eqMode, eqToneX, eqToneY, eqFocused, eqBalance, eqBands) {
-        // With Selaras installed the Equalizer page drives it instead, system-wide, so the in-app
-        // filters stand aside rather than shaping the sound a second time.
+        // Selaras is the equaliser now (in BitChord's audio path, or system-wide on Linux with the
+        // Selaras service), so the old in-app filters stand aside rather than shape the sound twice.
         playbackEngine.setEqualizer(eqEnabled && !Selaras.installed, DesktopEqualizerSettings.curve(), eqBalance)
     }
     LaunchedEffect(spatialAudio, skipSilence, outputPrecision) {

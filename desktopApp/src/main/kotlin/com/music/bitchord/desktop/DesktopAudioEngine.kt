@@ -1,5 +1,7 @@
 package com.music.bitchord.desktop
 
+import com.music.bitchord.selaras.Selaras
+import com.music.bitchord.selaras.SelarasDsp
 import com.music.bitchord.data.model.Song
 import com.music.bitchord.data.settings.AutomixPerformanceMode
 import com.music.bitchord.data.settings.MixBlend
@@ -717,6 +719,13 @@ class DesktopPlaybackEngine(
      * the last word on it.
      */
     private var equalizer = DesktopEqualizer()
+
+    /**
+     * Selaras, on the finished mix just before the device: one listener, one output, so its
+     * limiter sees exactly what reaches the speakers. Idle (and bit-transparent) when Selaras runs
+     * system-wide instead, or is switched off.
+     */
+    private val selaras = SelarasDsp()
     private var equalizerIncoming = DesktopEqualizer()
     private var silence: DesktopSilenceSkipper? = null
 
@@ -857,6 +866,7 @@ class DesktopPlaybackEngine(
                 skippedUs = skippedFrames.coerceAtLeast(0L) * 1_000_000.0 / rate * deck,
             )
         }
+        if (count > 0) selaras.process(samples, 0, count / sink.format.channels.coerceAtLeast(1))
         sink.write(samples, count)
         framesWritten += count / sink.format.channels.coerceAtLeast(1)
         if (count > 0 && _state.value.awaitingAudio) _state.update { it.copy(awaitingAudio = false) }
@@ -1413,6 +1423,9 @@ class DesktopPlaybackEngine(
         spatialIncoming = DesktopSpatialAudio(sink.format.channels, sink.format.sampleRate)
         equalizer.configure(sink.format.channels, sink.format.sampleRate)
         equalizerIncoming.configure(sink.format.channels, sink.format.sampleRate)
+        selaras.configure(sink.format.sampleRate, sink.format.channels)
+        DesktopSelarasOutput.name = sink.deviceName
+        Selaras.deviceChanged()
         silence = DesktopSilenceSkipper(sink.format.channels, sink.format.sampleRate)
             .apply { enabled = skipSilenceEnabled }
         outgoingFilter.configure(sink.format.channels, sink.format.sampleRate)
@@ -1449,6 +1462,9 @@ class DesktopPlaybackEngine(
         spatialIncoming = DesktopSpatialAudio(sink.format.channels, sink.format.sampleRate)
         equalizer.configure(sink.format.channels, sink.format.sampleRate)
         equalizerIncoming.configure(sink.format.channels, sink.format.sampleRate)
+        selaras.configure(sink.format.sampleRate, sink.format.channels)
+        DesktopSelarasOutput.name = sink.deviceName
+        Selaras.deviceChanged()
         silence = DesktopSilenceSkipper(sink.format.channels, sink.format.sampleRate)
             .apply { enabled = skipSilenceEnabled }
         outgoingFilter.configure(sink.format.channels, sink.format.sampleRate)
@@ -1498,6 +1514,7 @@ class DesktopPlaybackEngine(
         // first moments of the new position.
         equalizer.reset()
         equalizerIncoming.reset()
+        selaras.reset()
         silence?.reset()
         resetPlayhead(track, millis * 1_000)
         // Cleared by [play] once the first of the new position's audio is on its way out.
@@ -1892,7 +1909,7 @@ class DesktopPlaybackEngine(
             outputBytesPerSample = out.bytesPerSample.takeIf { sink.isOpen },
             deviceName = sink.deviceName,
             bufferBytes = sink.bufferBytes,
-            equalizerEnabled = equalizerEnabled,
+            equalizerEnabled = equalizerEnabled || selaras.isShaping,
             skipSilence = skipSilenceEnabled,
         )
     }

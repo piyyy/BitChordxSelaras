@@ -19,6 +19,7 @@ rootProject.name = "BitChord"
 include(":shared")
 include(":sharedUi")
 include(":desktopUi")
+include(":selarasUi")
 include(":desktopApp")
 
 // The Android module only when there is an SDK to build it against. A machine
