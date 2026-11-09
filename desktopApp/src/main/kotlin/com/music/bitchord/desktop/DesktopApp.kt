@@ -1724,7 +1724,9 @@ fun BitChordDesktopApp() {
     val eqBalance by DesktopEqualizerSettings.balance.collectAsState()
     val eqBands by DesktopEqualizerSettings.bands.collectAsState()
     LaunchedEffect(eqEnabled, eqMode, eqToneX, eqToneY, eqFocused, eqBalance, eqBands) {
-        playbackEngine.setEqualizer(eqEnabled, DesktopEqualizerSettings.curve(), eqBalance)
+        // With Selaras installed the Equalizer page drives it instead, system-wide, so the in-app
+        // filters stand aside rather than shaping the sound a second time.
+        playbackEngine.setEqualizer(eqEnabled && !Selaras.installed, DesktopEqualizerSettings.curve(), eqBalance)
     }
     LaunchedEffect(spatialAudio, skipSilence, outputPrecision) {
         playbackEngine.setSpatialAudio(spatialAudio)
@@ -3752,7 +3754,11 @@ fun BitChordDesktopApp() {
                                     onOpenIntegrations = { overlays.settingsPage = DesktopSettingsPage.INTEGRATIONS },
                                     onOpenLicenses = { overlays.settingsPage = DesktopSettingsPage.LICENSES },
                                 )
-                                DesktopSettingsPage.EQUALIZER -> DesktopEqualizerDialog(onDismiss = ::goBack)
+                                DesktopSettingsPage.EQUALIZER -> if (Selaras.installed) {
+                                    DesktopSelarasDialog(onDismiss = ::goBack)
+                                } else {
+                                    DesktopEqualizerDialog(onDismiss = ::goBack)
+                                }
                                 DesktopSettingsPage.AUDIO_OUTPUT -> DesktopAudioOutputDialog(onDismiss = ::goBack)
                                 DesktopSettingsPage.LISTEN_TOGETHER -> DesktopListenTogetherDialog(
                                     autoplayEnabled = autoplay,
@@ -5673,6 +5679,8 @@ private fun DesktopSettingsScreen(
                         }
                     }
                     val eqOn by DesktopEqualizerSettings.enabled.collectAsState()
+                    val selaras by Selaras.state.collectAsState()
+                    LaunchedEffect(Unit) { if (Selaras.installed) Selaras.refresh() }
                     SettingsToggle(
                         DesktopStrings["skip_silence", "Skip silence"],
                         DesktopStrings["d_shorten_long_gaps_rather_than_playing_them_out", "Shorten long gaps rather than playing them out"],
@@ -5696,8 +5704,17 @@ private fun DesktopSettingsScreen(
                         { if (DesktopCodecs.supportsDolbyAtmos) onDolbyAtmosChange(it) },
                     )
                     SettingsNavigationRow(
-                        title = DesktopStrings["equalizer", "Equalizer"],
-                        subtitle = if (eqOn) {
+                        title = if (Selaras.installed) "Equalizer · Selaras" else DesktopStrings["equalizer", "Equalizer"],
+                        subtitle = if (Selaras.installed) {
+                            selaras?.let { snap ->
+                                if (snap.enabled) {
+                                    listOfNotNull("Selaras", snap.settings["preset"] as? String, snap.settings["profile"] as? String)
+                                        .joinToString(" · ")
+                                } else {
+                                    "Selaras · " + DesktopStrings["d_off", "Off"]
+                                }
+                            } ?: "Selaras"
+                        } else if (eqOn) {
                             DesktopStrings["equalizer_subtitle", "Tone, seven bands and balance"]
                         } else {
                             DesktopStrings["d_off", "Off"]

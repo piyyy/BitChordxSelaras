@@ -74,7 +74,11 @@ internal fun DesktopAudioPipelineDialog(
             PipelineStage(DesktopStrings["pipeline_dsp", "DSP"]) {
                 PipelineRow(
                     DesktopStrings["equalizer", "Equalizer"],
-                    if (pipeline.equalizerEnabled) DesktopStrings["on", "On"] else DesktopStrings["off", "Off"],
+                    when {
+                        Selaras.installed -> "Selaras · system-wide, after BitChord"
+                        pipeline.equalizerEnabled -> DesktopStrings["on", "On"]
+                        else -> DesktopStrings["off", "Off"]
+                    },
                 )
                 PipelineRow(
                     DesktopStrings["skip_silence", "Skip silence"],

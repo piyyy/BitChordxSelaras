@@ -126,9 +126,21 @@ private fun desktopMain() = application {
             // AWT measures this in device pixels while Compose's window state is in dp. Keeping
             // the scale in the conversion makes the usable minimum consistent on every display.
             val transform = composeWindow.graphicsConfiguration.defaultTransform
+            // On Linux, though, AWT's sizes are already in Java2D's scaled user space (the scale
+            // comes from Xft.dpi, e.g. 2x under GNOME's XWayland native scaling), so multiplying
+            // again counts the scale twice: a 900dp minimum became 3600px on a 1080p screen and
+            // the window could be neither resized nor maximized.
+            val scaleX = if (DesktopPlatform.isLinux) 1.0 else transform.scaleX
+            val scaleY = if (DesktopPlatform.isLinux) 1.0 else transform.scaleY
+            // Never ask for more than the screen's usable area, or the window manager refuses to
+            // resize or maximize the window at all.
+            val gc = composeWindow.graphicsConfiguration
+            val insets = Toolkit.getDefaultToolkit().getScreenInsets(gc)
+            val usableWidth = gc.bounds.width - insets.left - insets.right
+            val usableHeight = gc.bounds.height - insets.top - insets.bottom
             composeWindow.minimumSize = Dimension(
-                (MIN_WINDOW_WIDTH_DP * transform.scaleX).roundToInt(),
-                (MIN_WINDOW_HEIGHT_DP * transform.scaleY).roundToInt(),
+                minOf((MIN_WINDOW_WIDTH_DP * scaleX).roundToInt(), usableWidth),
+                minOf((MIN_WINDOW_HEIGHT_DP * scaleY).roundToInt(), usableHeight),
             )
             // Setting AWT's minimum during the first composition can resize the native peer to
             // that minimum without updating Compose's state. Compose would then keep laying out a
@@ -136,8 +148,8 @@ private fun desktopMain() = application {
             // boundary off-screen until a maximize/restore cycle synchronised the two. Re-assert
             // the requested opening size on the native peer so both layers start in agreement.
             composeWindow.size = Dimension(
-                (openingSize.width.value * transform.scaleX).roundToInt(),
-                (openingSize.height.value * transform.scaleY).roundToInt(),
+                minOf((openingSize.width.value * scaleX).roundToInt(), usableWidth),
+                minOf((openingSize.height.value * scaleY).roundToInt(), usableHeight),
             )
             if (DesktopPlatform.isWindows && DesktopWindowsFrame.install("BitChord")) {
                 DesktopWindowBackdrop.apply()
