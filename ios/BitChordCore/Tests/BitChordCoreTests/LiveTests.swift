@@ -9,6 +9,10 @@ final class LiveTests: XCTestCase {
     }
 
     func testSearchHomeRadioAndPages() async throws {
+        // e.g. BITCHORD_LOCALE=id-ID, the way an Indonesian iPhone asks.
+        if let locale = ProcessInfo.processInfo.environment["BITCHORD_LOCALE"]?.split(separator: "-"), locale.count == 2 {
+            await Innertube.shared.setLocale(language: String(locale[0]), region: String(locale[1]))
+        }
         let songs = try await YouTubeMusic.search("radiohead let down", filter: .songs).rows
             .compactMap { if case .track(let s) = $0 { return s }; return nil }
         XCTAssertFalse(songs.isEmpty)

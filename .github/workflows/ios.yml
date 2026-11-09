@@ -82,7 +82,7 @@ jobs:
           set -o pipefail
           brew install xcodegen
           (cd ios && xcodegen generate)
-          xcodebuild -project ios/BitChord.xcodeproj -scheme BitChord -configuration Debug \
+          xcodebuild -project ios/BitChord.xcodeproj -scheme BitChord -configuration Release \
             -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' -derivedDataPath build \
             CODE_SIGNING_ALLOWED=NO build | tee build.log | xcpretty || (tail -200 build.log; exit 1)
       - name: Launch every tab, screenshot, collect logs
@@ -91,11 +91,11 @@ jobs:
           UDID=$(xcrun simctl list devices available -j | python3 -c "import json,sys; d=json.load(sys.stdin)['devices']; print(next(x['udid'] for k in sorted(d, reverse=True) if 'iOS' in k for x in d[k] if x['name'].startswith('iPhone')))")
           xcrun simctl boot "$UDID"
           xcrun simctl bootstatus "$UDID" -b
-          APP=build/Build/Products/Debug-iphonesimulator/BitChord.app
+          APP=build/Build/Products/Release-iphonesimulator/BitChord.app
           xcrun simctl install "$UDID" "$APP"
           for tab in 0 1 2 3; do
             xcrun simctl launch --terminate-running-process --stdout="$PWD/shots/tab$tab.log" --stderr="$PWD/shots/tab$tab.log" \
-              "$UDID" com.music.bitchord.ios -debugTab $tab || true
+              "$UDID" com.music.bitchord.ios -debugTab $tab -AppleLanguages "(id)" -AppleLocale id_ID || true
             sleep 25
             xcrun simctl io "$UDID" screenshot "shots/tab$tab.png" || true
           done
