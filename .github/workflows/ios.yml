@@ -24,6 +24,11 @@ jobs:
       - uses: actions/checkout@v4
       - name: Swift tests (parser against web/fixtures, Selaras DSP)
         run: swift test --package-path ios/BitChordCore
+      - name: Live test against music.youtube.com (Apple Foundation)
+        continue-on-error: true
+        env:
+          BITCHORD_LIVE: "1"
+        run: swift test --package-path ios/BitChordCore --filter LiveTests
 
   ipa:
     name: Unsigned IPA
@@ -64,3 +69,41 @@ jobs:
           name: BitChord-iOS-unsigned
           path: BitChord-unsigned.ipa
           retention-days: 30
+
+  simulator:
+    name: Simulator smoke test
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select Xcode
+        run: sudo xcode-select -s "$(ls -d /Applications/Xcode_16*.app | sort -V | tail -1)"
+      - name: Build for the simulator
+        run: |
+          set -o pipefail
+          brew install xcodegen
+          (cd ios && xcodegen generate)
+          xcodebuild -project ios/BitChord.xcodeproj -scheme BitChord -configuration Debug \
+            -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO build | tee build.log | xcpretty || (tail -200 build.log; exit 1)
+      - name: Launch every tab, screenshot, collect logs
+        run: |
+          mkdir -p shots
+          UDID=$(xcrun simctl list devices available -j | python3 -c "import json,sys; d=json.load(sys.stdin)['devices']; print(next(x['udid'] for k in sorted(d, reverse=True) if 'iOS' in k for x in d[k] if x['name'].startswith('iPhone')))")
+          xcrun simctl boot "$UDID"
+          xcrun simctl bootstatus "$UDID" -b
+          APP=build/Build/Products/Debug-iphonesimulator/BitChord.app
+          xcrun simctl install "$UDID" "$APP"
+          for tab in 0 1 2 3; do
+            xcrun simctl launch --terminate-running-process --stdout="$PWD/shots/tab$tab.log" --stderr="$PWD/shots/tab$tab.log" \
+              "$UDID" com.music.bitchord.ios -debugTab $tab || true
+            sleep 25
+            xcrun simctl io "$UDID" screenshot "shots/tab$tab.png" || true
+          done
+          xcrun simctl spawn "$UDID" log show --last 5m --style compact --predicate 'process == "BitChord"' > shots/system.log 2>&1 || true
+          tail -50 shots/*.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: simulator-shots
+          path: shots
+          retention-days: 7

@@ -201,6 +201,9 @@ public actor Innertube {
             } catch let error as URLError where attempt < 2 && error.code != .timedOut && error.code != .cancelled {
                 attempt += 1
                 try await Task.sleep(nanoseconds: UInt64(500_000_000 * attempt))
+            } catch {
+                print("BITCHORD innertube \(endpoint) failed: \(error)")
+                throw error
             }
         }
     }

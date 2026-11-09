@@ -51,7 +51,7 @@ enum MusicLink {
 
 struct RootView: View {
     @EnvironmentObject var player: PlayerModel
-    @State private var tab = 0
+    @State private var tab = UserDefaults.standard.integer(forKey: "debugTab")
     @State private var showPlayer = false
 
     var body: some View {
