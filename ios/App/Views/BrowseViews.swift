@@ -7,7 +7,7 @@ struct HomeView: View {
     @State private var shelves: [HomeShelf] = []
     @State private var continuation: String?
     @State private var loading = false
-    @State private var error: String?
+    @State private var error: Error?
     @State private var showSettings = false
 
     var body: some View {
@@ -23,9 +23,7 @@ struct HomeView: View {
         .overlay {
             if shelves.isEmpty {
                 if let error {
-                    ContentUnavailableView {
-                        Label("Couldn't load Home", systemImage: "wifi.exclamationmark")
-                    } description: { Text(error) } actions: { Button("Try again") { Task { await reload() } } }
+                    LoadErrorView(error: error, title: "Couldn't load Home") { Task { await reload() } }
                 } else {
                     ProgressView()
                 }
@@ -48,8 +46,10 @@ struct HomeView: View {
             shelves = page.shelves
             continuation = page.continuation
             error = nil
+        } catch is CancellationError {
+        } catch let e as URLError where e.code == .cancelled {
         } catch {
-            self.error = error.localizedDescription
+            self.error = error
         }
     }
 

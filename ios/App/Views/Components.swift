@@ -162,18 +162,14 @@ struct Loadable<Value, Content: View>: View {
     let load: () async throws -> Value
     @ViewBuilder let content: (Value) -> Content
     @State private var value: Value?
-    @State private var error: String?
+    @State private var error: Error?
 
     var body: some View {
         Group {
             if let value {
                 content(value)
             } else if let error {
-                ContentUnavailableView {
-                    Label("Couldn't load", systemImage: "wifi.exclamationmark")
-                } description: { Text(error) } actions: {
-                    Button("Try again") { Task { await fetch() } }
-                }
+                LoadErrorView(error: error) { Task { await fetch() } }
             } else {
                 ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
             }
@@ -187,7 +183,7 @@ struct Loadable<Value, Content: View>: View {
             value = try await load()
             error = nil
         } catch {
-            if value == nil { self.error = error.localizedDescription }
+            if value == nil, !(error is CancellationError), (error as? URLError)?.code != .cancelled { self.error = error }
         }
     }
 }
@@ -201,6 +197,35 @@ extension View {
             case .artist(let id, let name): ArtistView(browseId: id, name: name)
             case .shelf(let shelf): ShelfPageView(shelf: shelf)
             case .moodGenre(let mood): MoodGenreView(mood: mood)
+            }
+        }
+    }
+}
+
+/// Why a page didn't load, with the one fix iOS hides: a sideloaded app's network permission.
+struct LoadErrorView: View {
+    let error: Error
+    var title = "Couldn't load"
+    let retry: () -> Void
+
+    private var offline: Bool {
+        guard let code = (error as? URLError)?.code else { return false }
+        return [.notConnectedToInternet, .dataNotAllowed, .internationalRoamingOff, .networkConnectionLost].contains(code)
+    }
+
+    var body: some View {
+        ContentUnavailableView {
+            Label(offline ? "No connection" : title, systemImage: "wifi.exclamationmark")
+        } description: {
+            if offline {
+                Text("iOS isn't letting BitChord reach the internet. Open Settings › BitChord (or Settings › Mobile Data › BitChord) and allow WLAN & Mobile Data. Sideloaded apps sometimes start with it switched off.")
+            } else {
+                Text(error.localizedDescription)
+            }
+        } actions: {
+            Button("Try again", action: retry).buttonStyle(.borderedProminent)
+            if offline, let url = URL(string: UIApplication.openSettingsURLString) {
+                Button("Open Settings") { UIApplication.shared.open(url) }
             }
         }
     }

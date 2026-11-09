@@ -156,6 +156,20 @@ public actor Innertube {
     // MARK: Plumbing
 
     func post(_ endpoint: String, query: [String: String] = [:], body extra: JSONObject, anonymous: Bool = false) async throws -> JSONObject {
+        do {
+            return try await send(endpoint, query: query, body: extra, anonymous: anonymous)
+        } catch InnertubeError.http(let code, _) where !anonymous && cookie != nil && [400, 401, 403].contains(code)
+                    && !Self.accountOnly.contains(where: endpoint.hasPrefix) {
+            // A stale or partial cookie jar must not empty Home: read-only pages fall back to the visitor.
+            print("BITCHORD innertube \(endpoint) rejected the session (\(code)), retrying signed out")
+            return try await send(endpoint, query: query, body: extra, anonymous: true)
+        }
+    }
+
+    /// Endpoints that only mean something as the account.
+    static let accountOnly = ["account/", "like/", "subscription/", "feedback", "playlist/", "browse/edit_playlist"]
+
+    private func send(_ endpoint: String, query: [String: String], body extra: JSONObject, anonymous: Bool) async throws -> JSONObject {
         var components = URLComponents(string: "\(Self.musicBase)/\(endpoint)")!
         components.queryItems = [URLQueryItem(name: "prettyPrint", value: "false"), URLQueryItem(name: "hl", value: language)]
             + query.map { URLQueryItem(name: $0.key, value: $0.value) }
