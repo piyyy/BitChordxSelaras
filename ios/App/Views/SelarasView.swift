@@ -270,6 +270,10 @@ private struct GraphicBands: View {
         if dense { ScrollView(.horizontal, showsIndicators: false) { content } } else { content }
     }
 
+    private func hz(_ f: Double) -> String {
+        f >= 1000 ? String(format: f >= 10000 || f.truncatingRemainder(dividingBy: 1000) == 0 ? "%.0fk" : "%.1fk", f / 1000) : String(format: "%.0f", f)
+    }
+
     private func gain(_ v: Double) -> String { abs(v) < 0.05 ? "0" : String(format: "%+.1f", v).replacingOccurrences(of: ".0", with: "") }
 }
 

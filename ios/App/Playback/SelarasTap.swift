@@ -19,12 +19,13 @@ enum SelarasTap {
             unprepare: tapUnprepare,
             process: tapProcess
         )
-        var tap: MTAudioProcessingTap?
-        let status = MTAudioProcessingTapCreate(kCFAllocatorDefault, &callbacks, kMTAudioProcessingTapCreationFlag_PostEffects, &tap)
-        guard status == noErr, let tap else {
-            Unmanaged<TapBox>.fromOpaque(UnsafeRawPointer(Unmanaged.passUnretained(box).toOpaque())).release()
+        var tapRef: Unmanaged<MTAudioProcessingTap>?
+        let status = MTAudioProcessingTapCreate(kCFAllocatorDefault, &callbacks, kMTAudioProcessingTapCreationFlag_PostEffects, &tapRef)
+        guard status == noErr, let tapRef else {
+            Unmanaged.passUnretained(box).release()
             return nil
         }
+        let tap = tapRef.takeRetainedValue()
         let parameters = AVMutableAudioMixInputParameters(track: track)
         parameters.audioTapProcessor = tap
         let mix = AVMutableAudioMix()
