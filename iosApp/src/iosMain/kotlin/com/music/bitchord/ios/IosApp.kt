@@ -1,6 +1,9 @@
 package com.music.bitchord.ios
 
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
@@ -25,7 +28,9 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -64,6 +69,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.Typography
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
@@ -71,7 +77,9 @@ import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -80,16 +88,32 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.rotate
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Outline
+import androidx.compose.ui.graphics.Shape
+import androidx.compose.ui.graphics.drawscope.ContentDrawScope
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Density
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil3.compose.AsyncImage
+import com.music.bitchord.R
 import com.music.bitchord.data.YtMusicRepository
 import com.music.bitchord.data.model.BrowseItem
 import com.music.bitchord.data.model.BrowseType
@@ -104,8 +128,27 @@ import com.music.bitchord.data.model.ShelfItem
 import com.music.bitchord.data.model.Song
 import com.music.bitchord.data.model.UiState
 import com.music.bitchord.data.model.artworkAt
+import com.music.bitchord.data.settings.AppSettings
 import com.music.bitchord.ui.AppUi
+import com.music.bitchord.ui.components.BottomFadeScrim
+import com.music.bitchord.ui.components.BottomTab
+import com.music.bitchord.ui.components.FLOATING_BAR_MAX_WIDTH
+import com.music.bitchord.ui.components.FloatingBarsTapGuard
+import com.music.bitchord.ui.components.FloatingBottomBar
+import com.music.bitchord.ui.components.FrostedTopBar
+import com.music.bitchord.ui.components.GlassNavBar
+import com.music.bitchord.ui.components.LocalAppBackdrop
+import com.music.bitchord.ui.components.LocalLiquidGlassEnabled
+import com.music.bitchord.ui.components.MiniPlayer
+import com.music.bitchord.ui.components.SearchField
 import com.music.bitchord.ui.components.SongRow
+import com.music.bitchord.ui.components.TopBarAccountButton
+import com.music.bitchord.ui.components.backdrop.backdrops.LayerBackdrop
+import com.music.bitchord.ui.components.backdrop.backdrops.layerBackdrop
+import com.music.bitchord.ui.components.backdrop.backdrops.rememberLayerBackdrop
+import com.music.bitchord.ui.components.floatingtabbar.rememberFloatingTabBarScrollConnection
+import com.music.bitchord.ui.components.isGlassSupported
+import com.music.bitchord.ui.components.topBarContentPadding
 import com.music.bitchord.ui.icons.BitChordIcons
 import com.music.bitchord.ui.player.NowPlayingScreen
 import com.music.bitchord.ui.player.PlayerPlatform
@@ -113,11 +156,17 @@ import com.music.bitchord.ui.screens.ExploreScreen
 import com.music.bitchord.ui.screens.HomeScreen
 import com.music.bitchord.ui.screens.LibraryLink
 import com.music.bitchord.ui.screens.LibraryScreen
+import com.music.bitchord.ui.screens.MoodGenrePlaylistsScreen
 import com.music.bitchord.ui.screens.SearchScreen
 import com.music.bitchord.ui.utils.guardSheetFromContentTouches
+import dev.chrisbanes.haze.HazeState
+import dev.chrisbanes.haze.hazeSource
 import kotlinx.coroutines.launch
+import platform.Foundation.NSUserDefaults
 
-// ---- Theme: the phone's (app/ui/theme/Theme.kt), on the system's SF Pro --------------------------
+// ---- Theme: the phone's (app/ui/theme/Theme.kt). Android bundles SF Pro; iOS's system font is it.
+
+private val AccentRed = Color(0xFFFA2D48)
 
 private val DarkColors = darkColorScheme(
     primary = Color.White,
@@ -143,95 +192,329 @@ private val LightColors = lightColorScheme(
     outline = Color(0xFFE5E5EA),
 )
 
-private val AccentRed = Color(0xFFFA2D48)
+private val BitChordTypography = Typography(
+    displayLarge = TextStyle(fontWeight = FontWeight.W800, fontSize = 34.sp, letterSpacing = (-0.8).sp),
+    headlineLarge = TextStyle(fontWeight = FontWeight.W800, fontSize = 30.sp, letterSpacing = (-0.7).sp),
+    headlineMedium = TextStyle(fontWeight = FontWeight.W700, fontSize = 22.sp, letterSpacing = (-0.4).sp),
+    titleLarge = TextStyle(fontWeight = FontWeight.W700, fontSize = 20.sp, letterSpacing = (-0.3).sp),
+    titleMedium = TextStyle(fontWeight = FontWeight.W600, fontSize = 16.sp, letterSpacing = (-0.2).sp),
+    bodyLarge = TextStyle(fontWeight = FontWeight.W400, fontSize = 16.sp),
+    bodyMedium = TextStyle(fontWeight = FontWeight.W400, fontSize = 14.sp),
+    labelMedium = TextStyle(fontWeight = FontWeight.W600, fontSize = 12.sp),
+    labelSmall = TextStyle(fontWeight = FontWeight.W600, fontSize = 11.sp),
+)
 
 @Composable
 fun BitChordIosTheme(content: @Composable () -> Unit) {
     val dark = isSystemInDarkTheme()
-    MaterialTheme(colorScheme = if (dark) DarkColors else LightColors, content = content)
+    MaterialTheme(
+        colorScheme = if (dark) DarkColors else LightColors,
+        typography = BitChordTypography,
+        content = content,
+    )
 }
 
-// ---- Root --------------------------------------------------------------------------------------
+// ---- Root: MainActivity's BitChordApp, the parts iOS has -----------------------------------------
 
-private enum class Tab(val label: String) { HOME("Home"), EXPLORE("Explore"), LIBRARY("Library"), SEARCH("Search") }
+private const val TAB_HOME = 0
+private const val TAB_EXPLORE = 1
+private const val TAB_LIBRARY = 2
+private const val TAB_SEARCH = 3
 
-private val TabBarHeight = 64.dp
-private val MiniPlayerHeight = 64.dp
-
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun IosApp() {
     BitChordIosTheme {
-        var tab by remember { mutableStateOf(Tab.HOME) }
-        val stacks = remember { Tab.entries.associateWith { mutableStateListOf<Route>() } }
-        var showPlayer by remember { mutableStateOf(false) }
-        var menuSong by remember { mutableStateOf<Song?>(null) }
-        val current by IosPlayer.current.collectAsStateWithLifecycle()
-
-        LaunchedEffect(Unit) {
-            IosAppModel.loadHome()
-            IosAppModel.loadExplore()
-            IosAppModel.loadLibrary()
+        val liquidGlassEnabled by AppSettings.liquidGlass.collectAsStateWithLifecycle()
+        // As on the phone: the glass samples a recording of the page, laid over the window's
+        // background so the recording is opaque like the screen.
+        val windowBackground = MaterialTheme.colorScheme.background
+        val paintBackdrop: ContentDrawScope.() -> Unit = remember(windowBackground) {
+            {
+                drawRect(windowBackground)
+                drawContent()
+            }
         }
+        val appBackdrop = rememberLayerBackdrop(onDraw = paintBackdrop)
+        CompositionLocalProvider(
+            LocalLiquidGlassEnabled provides liquidGlassEnabled,
+            LocalAppBackdrop provides appBackdrop,
+        ) {
+            AppScaffold(appBackdrop)
+        }
+    }
+}
 
-        val nav = remember {
-            object : Nav {
-                override fun open(route: Route) { stacks.getValue(tab).add(route) }
-                override fun back() { stacks.getValue(tab).removeLastOrNull() }
-                override fun menu(song: Song) { menuSong = song }
-                override fun player() { showPlayer = true }
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun AppScaffold(appBackdrop: LayerBackdrop) {
+    // `-debugTab N` (launch argument → NSUserDefaults' argument domain) opens on that tab: CI's
+    // simulator run screenshots each one.
+    var selectedTab by remember {
+        mutableIntStateOf(NSUserDefaults.standardUserDefaults.integerForKey("debugTab").toInt().coerceIn(TAB_HOME, TAB_SEARCH))
+    }
+    val stacks = remember { List(4) { mutableStateListOf<Route>() } }
+    var showPlayer by remember { mutableStateOf(false) }
+    var menuSong by remember { mutableStateOf<Song?>(null) }
+    var searchFocusRequested by remember { mutableStateOf(false) }
+    val current by IosPlayer.current.collectAsStateWithLifecycle()
+    val playing by IosPlayer.isPlaying.collectAsStateWithLifecycle()
+    val loading by IosPlayer.isLoading.collectAsStateWithLifecycle()
+    val account by IosAccount.account.collectAsStateWithLifecycle()
+    val reduceDynamicBlur by AppSettings.reduceDynamicBlur.collectAsStateWithLifecycle()
+    val homeRefreshing by IosAppModel.homeRefreshing.collectAsStateWithLifecycle()
+    val exploreRefreshing by IosAppModel.exploreRefreshing.collectAsStateWithLifecycle()
+    val libraryRefreshing by IosAppModel.libraryRefreshing.collectAsStateWithLifecycle()
+    val query by IosAppModel.query.collectAsStateWithLifecycle()
+
+    val hazeState = remember { HazeState() }
+    val glassActive = LocalLiquidGlassEnabled.current && isGlassSupported()
+    val glassSamplesBackdrop = glassActive && !reduceDynamicBlur
+    val navBarScroll = rememberFloatingTabBarScrollConnection()
+
+    LaunchedEffect(Unit) {
+        IosAppModel.loadHome()
+        IosAppModel.loadExplore()
+        IosAppModel.loadLibrary()
+    }
+
+    val nav = remember {
+        object : Nav {
+            override fun open(route: Route) { stacks[selectedTab].add(route) }
+            override fun back() { stacks[selectedTab].removeLastOrNull() }
+            override fun menu(song: Song) { menuSong = song }
+            override fun player() { showPlayer = true }
+        }
+    }
+
+    // One list state per tab and per pushed page, hoisted so the top bar can read the scroll
+    // (its small title fades in once the big in-list header has gone) and tabs keep their place.
+    val tabListStates = remember { List(4) { LazyListState() } }
+    val pageListStates = remember { mutableMapOf<Route, LazyListState>() }
+    val route = stacks[selectedTab].lastOrNull()
+    val currentListState = route?.let { pageListStates.getOrPut(it) { LazyListState() } } ?: tabListStates[selectedTab]
+    val scrolled by remember(currentListState) {
+        derivedStateOf {
+            currentListState.firstVisibleItemIndex > 0 || currentListState.firstVisibleItemScrollOffset > 24
+        }
+    }
+
+    // Room for the frosted bar above and the tab bar (plus mini player) below — the phone's numbers.
+    val listPadding = PaddingValues(
+        top = topBarContentPadding(),
+        bottom = if (current != null) 210.dp else 140.dp,
+    )
+
+    val homeLabel = stringResource(R.string.home)
+    val exploreLabel = stringResource(R.string.explore)
+    val libraryLabel = stringResource(R.string.library)
+    val searchLabel = stringResource(R.string.search)
+    val tabs = remember(homeLabel, exploreLabel, libraryLabel, searchLabel) {
+        listOf(
+            BottomTab(homeLabel, BitChordIcons.Home),
+            BottomTab(exploreLabel, BitChordIcons.TabExplore),
+            BottomTab(libraryLabel, BitChordIcons.TabLibrary),
+            BottomTab(searchLabel, BitChordIcons.TabSearch),
+        )
+    }
+
+    val onTabSelected: (Int) -> Unit = { index ->
+        stacks[index].clear()
+        selectedTab = index
+        if (index == TAB_SEARCH) {
+            IosAppModel.setQuery("")
+            searchFocusRequested = true
+        }
+    }
+
+    Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
+        AnimatedContent(
+            targetState = selectedTab to route,
+            transitionSpec = {
+                if (initialState.second == null && targetState.second == null) {
+                    EnterTransition.None togetherWith ExitTransition.None
+                } else {
+                    fadeIn(tween(180)) togetherWith fadeOut(tween(180))
+                }
+            },
+            modifier = Modifier
+                .fillMaxSize()
+                .hazeSource(hazeState)
+                .then(
+                    if (glassActive) {
+                        Modifier
+                            .then(if (glassSamplesBackdrop) Modifier.layerBackdrop(appBackdrop) else Modifier)
+                            .nestedScroll(navBarScroll)
+                    } else {
+                        Modifier
+                    },
+                ),
+            label = "content",
+        ) { (tab, shown) ->
+            val listState = shown?.let { pageListStates.getOrPut(it) { LazyListState() } } ?: tabListStates[tab]
+            when (shown) {
+                null -> TabRoot(tab, listPadding, listState, nav)
+                is Route.Detail -> DetailPage(shown, listPadding, listState, nav)
+                is Route.Artist -> ArtistPageView(shown, listPadding, listState, nav)
+                is Route.Shelves -> ShelvesPage(shown, listPadding, listState, nav)
+                Route.Settings -> SettingsPage(listPadding, listState)
             }
         }
 
-        val bottomInset = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
-        val chrome = TabBarHeight + bottomInset + (if (current != null) MiniPlayerHeight + 8.dp else 0.dp)
-        val padding = PaddingValues(
-            top = WindowInsets.statusBars.asPaddingValues().calculateTopPadding(),
-            bottom = chrome + 16.dp,
+        BottomFadeScrim(
+            pageColor = MaterialTheme.colorScheme.background,
+            modifier = Modifier.align(Alignment.TopCenter).rotate(180f),
         )
 
-        Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
-            val stack = stacks.getValue(tab)
-            AnimatedContent(
-                targetState = tab to stack.lastOrNull(),
-                transitionSpec = { fadeIn() togetherWith fadeOut() },
-                label = "page",
-            ) { (shownTab, route) ->
-                when (route) {
-                    null -> TabRoot(shownTab, padding, nav)
-                    is Route.Detail -> DetailPage(route, padding, nav)
-                    is Route.Artist -> ArtistPageView(route, padding, nav)
-                    is Route.Shelves -> ShelvesPage(route, padding, nav)
-                    Route.Settings -> SettingsPage(padding, nav)
+        val searchFieldFocus = remember { FocusRequester() }
+        FrostedTopBar(
+            title = when (route) {
+                is Route.Detail -> route.title
+                is Route.Artist -> route.name
+                is Route.Shelves -> route.title
+                Route.Settings -> stringResource(R.string.settings)
+                null -> tabs[selectedTab].label
+            },
+            transparentBackdrop = true,
+            artworkPageChrome = true,
+            backButtonHazeState = hazeState,
+            scrolled = when (route) {
+                Route.Settings, is Route.Shelves -> true
+                null -> scrolled || selectedTab == TAB_SEARCH
+                else -> scrolled
+            },
+            refreshing = route == null && when (selectedTab) {
+                TAB_HOME -> homeRefreshing
+                TAB_EXPLORE -> exploreRefreshing
+                TAB_LIBRARY -> libraryRefreshing
+                else -> false
+            },
+            onBack = if (route != null) ({ nav.back() }) else null,
+            modifier = Modifier.align(Alignment.TopCenter),
+            accessory = if (selectedTab == TAB_SEARCH && route == null) {
+                {
+                    val keyboard = LocalSoftwareKeyboardController.current
+                    LaunchedEffect(searchFocusRequested) {
+                        if (searchFocusRequested) {
+                            runCatching { searchFieldFocus.requestFocus() }
+                            keyboard?.show()
+                            searchFocusRequested = false
+                        }
+                    }
+                    SearchField(
+                        query = query,
+                        onQueryChange = IosAppModel::setQuery,
+                        onSubmit = { IosAppModel.submit() },
+                        focusRequester = searchFieldFocus,
+                    )
                 }
-            }
-
-            Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth()) {
-                current?.let { song -> MiniPlayer(song, onOpen = { showPlayer = true }) }
-                TabBar(tab, bottomInset) { picked ->
-                    if (picked == tab) stacks.getValue(picked).clear() else tab = picked
+            } else {
+                null
+            },
+            actions = {
+                if (route == null) {
+                    TopBarAccountButton(
+                        account = account,
+                        onClick = { nav.open(Route.Settings) },
+                    )
                 }
-            }
-        }
+            },
+        )
 
-        if (showPlayer && current != null) {
-            val sheet = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-            ModalBottomSheet(
-                onDismissRequest = { showPlayer = false },
-                sheetState = sheet,
-                dragHandle = null,
-                shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
-                containerColor = Color.Black,
-                contentWindowInsets = { WindowInsets(0, 0, 0, 0) },
+        BottomFadeScrim(
+            withMiniPlayer = current != null,
+            pageColor = MaterialTheme.colorScheme.background,
+            modifier = Modifier.align(Alignment.BottomCenter),
+        )
+
+        val floatingBarsHeight = remember { mutableIntStateOf(0) }
+        FloatingBarsTapGuard(
+            barsHeight = { floatingBarsHeight.intValue },
+            modifier = Modifier.align(Alignment.BottomCenter),
+        )
+
+        if (glassActive) {
+            Column(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .widthIn(max = FLOATING_BAR_MAX_WIDTH)
+                    .fillMaxWidth()
+                    .onSizeChanged { floatingBarsHeight.intValue = it.height },
             ) {
-                Box(Modifier.fillMaxSize().guardSheetFromContentTouches(sheet)) {
-                    NowPlaying(nav, onClose = { showPlayer = false })
+                GlassNavBar(
+                    tabs = tabs,
+                    selectedIndex = selectedTab,
+                    onTabSelected = onTabSelected,
+                    scrollConnection = navBarScroll,
+                    song = current,
+                    isPlaying = playing,
+                    isLoading = loading,
+                    onPlayPause = IosPlayer::togglePlay,
+                    onNext = IosPlayer::next,
+                    onPrevious = IosPlayer::previous,
+                    onExpand = { showPlayer = true },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+        } else {
+            Column(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .widthIn(max = FLOATING_BAR_MAX_WIDTH)
+                    .fillMaxWidth()
+                    .onSizeChanged { floatingBarsHeight.intValue = it.height },
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                current?.let { song ->
+                    MiniPlayer(
+                        song = song,
+                        isPlaying = playing,
+                        isLoading = loading,
+                        hazeState = hazeState,
+                        onPlayPause = IosPlayer::togglePlay,
+                        onNext = IosPlayer::next,
+                        onPrevious = IosPlayer::previous,
+                        onExpand = { showPlayer = true },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Spacer(Modifier.height(8.dp))
                 }
+                FloatingBottomBar(
+                    tabs = tabs,
+                    selectedIndex = selectedTab,
+                    hazeState = hazeState,
+                    onTabSelected = onTabSelected,
+                )
             }
         }
-
-        menuSong?.let { song -> SongMenu(song, nav, onDismiss = { menuSong = null }) }
     }
+
+    if (showPlayer && current != null) {
+        val sheet = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+        ModalBottomSheet(
+            onDismissRequest = { showPlayer = false },
+            sheetState = sheet,
+            shape = PlayerSheetShape,
+            containerColor = Color.Transparent,
+            dragHandle = null,
+            contentWindowInsets = { WindowInsets(0, 0, 0, 0) },
+            sheetMaxWidth = Dp.Unspecified,
+        ) {
+            Box(Modifier.fillMaxSize().guardSheetFromContentTouches(sheet)) {
+                NowPlaying(nav, onClose = { showPlayer = false })
+            }
+        }
+    }
+
+    menuSong?.let { song -> SongMenu(song, nav, onDismiss = { menuSong = null }) }
+}
+
+/**
+ * The player sheet's clip, as on the phone: as tall again above its top edge, so the artwork
+ * travelling ahead of the sheet isn't cut off mid-air.
+ */
+private object PlayerSheetShape : Shape {
+    override fun createOutline(size: Size, layoutDirection: LayoutDirection, density: Density): Outline =
+        Outline.Rectangle(Rect(0f, -size.height, size.width, size.height))
 }
 
 interface Nav {
@@ -262,47 +545,42 @@ fun Nav.openBrowse(browseId: String, title: String, subtitle: String, thumbnailU
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun TabRoot(tab: Tab, padding: PaddingValues, nav: Nav) {
+private fun TabRoot(tab: Int, padding: PaddingValues, listState: LazyListState, nav: Nav) {
     val currentSong by IosPlayer.current.collectAsStateWithLifecycle()
     val playing by IosPlayer.isPlaying.collectAsStateWithLifecycle()
     val signedIn by IosAccount.signedIn.collectAsStateWithLifecycle()
     when (tab) {
-        Tab.HOME -> {
+        TAB_HOME -> {
             val state by IosAppModel.home.collectAsStateWithLifecycle()
             val refreshing by IosAppModel.homeRefreshing.collectAsStateWithLifecycle()
             val loadingMore by IosAppModel.homeLoadingMore.collectAsStateWithLifecycle()
-            Box {
-                HomeScreen(
-                    state = state,
-                    listState = rememberLazyListState(),
-                    onItemClick = { item, _ -> nav.openItem(item) },
-                    onRetry = { IosAppModel.loadHome() },
-                    refreshing = refreshing,
-                    onRefresh = { IosAppModel.loadHome(refresh = true) },
-                    pullState = rememberPullToRefreshState(),
-                    contentPadding = padding,
-                    title = "Home",
-                    signedIn = signedIn,
-                    onSignIn = { IosPlayer.bridge.openSignIn() },
-                    onItemLongPress = { item ->
-                        item.videoId?.let { nav.menu(Song(it, item.title, item.subtitle, item.thumbnailUrl)) }
-                    },
-                    onLoadMore = if (IosAppModel.canLoadMoreHome) ({ IosAppModel.moreHome() }) else null,
-                    loadingMore = loadingMore,
-                    currentSong = currentSong,
-                    isPlaying = playing,
-                )
-                TopIcon(Icons.Filled.Settings, Modifier.align(Alignment.TopEnd).padding(top = padding.calculateTopPadding())) {
-                    nav.open(Route.Settings)
-                }
-            }
+            HomeScreen(
+                state = state,
+                listState = listState,
+                currentSong = currentSong,
+                isPlaying = playing,
+                title = stringResource(R.string.listen_now),
+                signedIn = signedIn,
+                onSignIn = { IosPlayer.bridge.openSignIn() },
+                onItemClick = { item, _ -> nav.openItem(item) },
+                onItemLongPress = { item ->
+                    item.videoId?.let { nav.menu(Song(it, item.title, item.subtitle, item.thumbnailUrl)) }
+                },
+                onRetry = { IosAppModel.loadHome() },
+                refreshing = refreshing,
+                onRefresh = { IosAppModel.loadHome(refresh = true) },
+                pullState = rememberPullToRefreshState(),
+                contentPadding = padding,
+                onLoadMore = if (IosAppModel.canLoadMoreHome) ({ IosAppModel.moreHome() }) else null,
+                loadingMore = loadingMore,
+            )
         }
-        Tab.EXPLORE -> {
+        TAB_EXPLORE -> {
             val state by IosAppModel.explore.collectAsStateWithLifecycle()
             val refreshing by IosAppModel.exploreRefreshing.collectAsStateWithLifecycle()
             ExploreScreen(
                 state = state,
-                listState = rememberLazyListState(),
+                listState = listState,
                 onCategoryClick = { nav.open(Route.Shelves(it.title, it.browseId, it.params)) },
                 onRetry = { IosAppModel.loadExplore() },
                 refreshing = refreshing,
@@ -311,13 +589,13 @@ private fun TabRoot(tab: Tab, padding: PaddingValues, nav: Nav) {
                 contentPadding = padding,
             )
         }
-        Tab.LIBRARY -> {
+        TAB_LIBRARY -> {
             val state by IosAppModel.library.collectAsStateWithLifecycle()
             val refreshing by IosAppModel.libraryRefreshing.collectAsStateWithLifecycle()
             LibraryScreen(
                 signedIn = signedIn,
                 state = state,
-                listState = rememberLazyListState(),
+                listState = listState,
                 onShelfItemClick = { nav.openItem(it) },
                 onShelfItemLongPress = { item -> item.videoId?.let { nav.menu(Song(it, item.title, item.subtitle, item.thumbnailUrl)) } },
                 onNewPlaylist = { IosPlayer.bridge.toast("Create playlists on music.youtube.com for now") },
@@ -340,12 +618,12 @@ private fun TabRoot(tab: Tab, padding: PaddingValues, nav: Nav) {
                 deviceItems = emptyList(),
             )
         }
-        Tab.SEARCH -> SearchTab(padding, nav)
+        else -> SearchTab(padding, listState, nav)
     }
 }
 
 @Composable
-private fun SearchTab(padding: PaddingValues, nav: Nav) {
+private fun SearchTab(padding: PaddingValues, listState: LazyListState, nav: Nav) {
     val query by IosAppModel.query.collectAsStateWithLifecycle()
     val filter by IosAppModel.filter.collectAsStateWithLifecycle()
     val results by IosAppModel.results.collectAsStateWithLifecycle()
@@ -356,7 +634,6 @@ private fun SearchTab(padding: PaddingValues, nav: Nav) {
     val reset by IosAppModel.scrollReset.collectAsStateWithLifecycle()
     val currentSong by IosPlayer.current.collectAsStateWithLifecycle()
     val playing by IosPlayer.isPlaying.collectAsStateWithLifecycle()
-    var focus by remember { mutableStateOf(false) }
     SearchScreen(
         query = query,
         onQueryChange = IosAppModel::setQuery,
@@ -367,10 +644,10 @@ private fun SearchTab(padding: PaddingValues, nav: Nav) {
         results = results,
         loadingMore = loadingMore,
         onLoadMore = IosAppModel::moreResults,
-        listState = rememberLazyListState(),
+        listState = listState,
         scrollResetTrigger = reset,
-        focusRequested = focus,
-        onFocusHandled = { focus = false },
+        focusRequested = false,
+        onFocusHandled = {},
         onSongClick = { songs, i ->
             songs.getOrNull(i)?.let(IosAppModel::rememberSong)
             IosPlayer.play(listOf(songs[i]), radio = true)
@@ -402,14 +679,16 @@ private fun SearchTab(padding: PaddingValues, nav: Nav) {
         onHistoryClear = IosAppModel::clearHistory,
         onTypeaheadLongPress = nav::menu,
         contentPadding = padding,
-        topPadding = padding.calculateTopPadding(),
+        topPadding = topBarContentPadding(),
+        // The field is in the top bar, as on the phone; see the bar's accessory.
+        showField = false,
     )
 }
 
 // ---- Album / playlist ---------------------------------------------------------------------------
 
 @Composable
-private fun DetailPage(route: Route.Detail, padding: PaddingValues, nav: Nav) {
+private fun DetailPage(route: Route.Detail, padding: PaddingValues, listState: LazyListState, nav: Nav) {
     if (route.browseId == "selaras:") {
         LaunchedEffect(Unit) { nav.back(); IosPlayer.bridge.openSelaras() }
         return
@@ -422,11 +701,11 @@ private fun DetailPage(route: Route.Detail, padding: PaddingValues, nav: Nav) {
     val header = state.header
     val isAlbum = route.browseId.startsWith("MPRE")
 
-    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = padding.calculateBottomPadding())) {
+    LazyColumn(Modifier.fillMaxSize(), state = listState, contentPadding = PaddingValues(bottom = padding.calculateBottomPadding())) {
         item {
             Box {
                 Column(
-                    Modifier.fillMaxWidth().padding(top = padding.calculateTopPadding() + 48.dp, start = 24.dp, end = 24.dp),
+                    Modifier.fillMaxWidth().padding(top = padding.calculateTopPadding(), start = 24.dp, end = 24.dp),
                     horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
                     AsyncImage(
@@ -458,7 +737,6 @@ private fun DetailPage(route: Route.Detail, padding: PaddingValues, nav: Nav) {
                     }
                     Spacer(Modifier.height(12.dp))
                 }
-                BackButton(Modifier.padding(top = padding.calculateTopPadding()), nav)
             }
         }
         when (val songs = state.songs) {
@@ -487,14 +765,14 @@ private fun DetailPage(route: Route.Detail, padding: PaddingValues, nav: Nav) {
 // ---- Artist ------------------------------------------------------------------------------------
 
 @Composable
-private fun ArtistPageView(route: Route.Artist, padding: PaddingValues, nav: Nav) {
+private fun ArtistPageView(route: Route.Artist, padding: PaddingValues, listState: LazyListState, nav: Nav) {
     LaunchedEffect(route.browseId) { IosAppModel.openArtist(route.browseId) }
     val artists by IosAppModel.artists.collectAsStateWithLifecycle()
     val currentSong by IosPlayer.current.collectAsStateWithLifecycle()
     val playing by IosPlayer.isPlaying.collectAsStateWithLifecycle()
     val state = artists[route.browseId] ?: UiState.Loading
 
-    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = padding.calculateBottomPadding())) {
+    LazyColumn(Modifier.fillMaxSize(), state = listState, contentPadding = PaddingValues(bottom = padding.calculateBottomPadding())) {
         val page = (state as? UiState.Success)?.data
         item {
             Box(Modifier.fillMaxWidth().aspectRatio(1f)) {
@@ -511,7 +789,6 @@ private fun ArtistPageView(route: Route.Artist, padding: PaddingValues, nav: Nav
                         Text(it, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
                     }
                 }
-                BackButton(Modifier.padding(top = padding.calculateTopPadding()), nav)
             }
         }
         when (state) {
@@ -520,7 +797,7 @@ private fun ArtistPageView(route: Route.Artist, padding: PaddingValues, nav: Nav
             is UiState.Success -> {
                 val data = state.data
                 if (data.songs.isNotEmpty()) {
-                    item { SectionTitle("Top songs") }
+                    item { SectionTitle(stringResource(R.string.top_songs)) }
                     itemsIndexed(data.songs.take(10), key = { i, s -> "top$i${s.videoId}" }) { i, song ->
                         SongRow(
                             song = song,
@@ -546,31 +823,19 @@ private fun ArtistPageView(route: Route.Artist, padding: PaddingValues, nav: Nav
 
 // ---- Mood / genre / "show all" -------------------------------------------------------------------
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun ShelvesPage(route: Route.Shelves, padding: PaddingValues, nav: Nav) {
+private fun ShelvesPage(route: Route.Shelves, padding: PaddingValues, listState: LazyListState, nav: Nav) {
     val key = route.browseId + (route.params ?: "")
     LaunchedEffect(key) { IosAppModel.openShelves(route) }
     val all by IosAppModel.shelves.collectAsStateWithLifecycle()
-    val currentSong by IosPlayer.current.collectAsStateWithLifecycle()
-    val playing by IosPlayer.isPlaying.collectAsStateWithLifecycle()
-    Box {
-        HomeScreen(
-            state = all[key] ?: UiState.Loading,
-            listState = rememberLazyListState(),
-            onItemClick = { item, _ -> nav.openItem(item) },
-            onRetry = { IosAppModel.openShelves(route) },
-            refreshing = false,
-            onRefresh = {},
-            pullState = rememberPullToRefreshState(),
-            contentPadding = PaddingValues(top = padding.calculateTopPadding() + 44.dp, bottom = padding.calculateBottomPadding()),
-            title = route.title,
-            leadHero = false,
-            currentSong = currentSong,
-            isPlaying = playing,
-        )
-        BackButton(Modifier.padding(top = padding.calculateTopPadding()), nav)
-    }
+    MoodGenrePlaylistsScreen(
+        title = route.title,
+        state = all[key] ?: UiState.Loading,
+        listState = listState,
+        onItemClick = { item -> nav.openItem(item) },
+        onRetry = { IosAppModel.openShelves(route) },
+        contentPadding = padding,
+    )
 }
 
 @Composable
@@ -599,20 +864,16 @@ private fun ShelfCarousel(shelf: HomeShelf, nav: Nav) {
 // ---- Settings ----------------------------------------------------------------------------------
 
 @Composable
-private fun SettingsPage(padding: PaddingValues, nav: Nav) {
+private fun SettingsPage(padding: PaddingValues, listState: LazyListState) {
     val signedIn by IosAccount.signedIn.collectAsStateWithLifecycle()
     val account by IosAccount.account.collectAsStateWithLifecycle()
     val autoplay by IosSettings.autoplay.collectAsStateWithLifecycle()
     val synced by IosSettings.syncedLyrics.collectAsStateWithLifecycle()
     val blur by IosSettings.lyricsBlur.collectAsStateWithLifecycle()
     val reduce by IosSettings.reduceAnimation.collectAsStateWithLifecycle()
-    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(top = padding.calculateTopPadding(), bottom = padding.calculateBottomPadding())) {
-        item {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                BackButton(Modifier, nav)
-                Text("Settings", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
-            }
-        }
+    val liquidGlass by AppSettings.liquidGlass.collectAsStateWithLifecycle()
+    val reduceBlur by AppSettings.reduceDynamicBlur.collectAsStateWithLifecycle()
+    LazyColumn(Modifier.fillMaxSize(), state = listState, contentPadding = PaddingValues(top = padding.calculateTopPadding(), bottom = padding.calculateBottomPadding())) {
         item { SectionTitle("Account") }
         item {
             if (signedIn) {
@@ -650,6 +911,8 @@ private fun SettingsPage(padding: PaddingValues, nav: Nav) {
         item { Toggle("Synced lyrics", "Follow the song line by line", synced) { IosSettings.set(IosSettings.syncedLyrics, "syncedLyrics", it) } }
         item { Toggle("Blur other lines", "Focus on the line being sung", blur) { IosSettings.set(IosSettings.lyricsBlur, "lyricsBlur", it) } }
         item { SectionTitle("Appearance") }
+        item { Toggle("Liquid glass", "The floating tab bar and buttons as refracting glass", liquidGlass) { AppSettings.setLiquidGlass(it) } }
+        item { Toggle("Reduce dynamic blur", null, reduceBlur) { AppSettings.setReduceDynamicBlur(it) } }
         item { Toggle("Reduce animation", null, reduce) { IosSettings.set(IosSettings.reduceAnimation, "reduceAnimation", it) } }
         item {
             Text(
@@ -757,75 +1020,6 @@ private fun NowPlaying(nav: Nav, onClose: () -> Unit) {
     }
 }
 
-// ---- Mini player and tab bar -------------------------------------------------------------------
-
-@Composable
-private fun MiniPlayer(song: Song, onOpen: () -> Unit) {
-    val playing by IosPlayer.isPlaying.collectAsStateWithLifecycle()
-    val loading by IosPlayer.isLoading.collectAsStateWithLifecycle()
-    Row(
-        Modifier
-            .padding(horizontal = 12.dp)
-            .padding(bottom = 8.dp)
-            .fillMaxWidth()
-            .height(MiniPlayerHeight)
-            .clip(RoundedCornerShape(percent = 50))
-            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.96f))
-            .clickable(onClick = onOpen)
-            .padding(horizontal = 10.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        AsyncImage(
-            model = song.artworkAt(ROW_ART_PX),
-            contentDescription = null,
-            contentScale = ContentScale.Crop,
-            modifier = Modifier.size(44.dp).clip(CircleShape).background(MaterialTheme.colorScheme.surface),
-        )
-        Column(Modifier.weight(1f).padding(horizontal = 12.dp)) {
-            Text(song.title, maxLines = 1, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
-            Text(song.artist, maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        }
-        if (loading) {
-            CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 2.dp)
-        } else {
-            IconButton(onClick = IosPlayer::togglePlay) {
-                Icon(if (playing) Icons.Filled.Pause else Icons.Filled.PlayArrow, contentDescription = if (playing) "Pause" else "Play", Modifier.size(30.dp))
-            }
-        }
-        IconButton(onClick = IosPlayer::next) { Icon(Icons.Filled.SkipNext, contentDescription = "Next", Modifier.size(28.dp)) }
-    }
-}
-
-@Composable
-private fun TabBar(selected: Tab, bottomInset: androidx.compose.ui.unit.Dp, onSelect: (Tab) -> Unit) {
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .background(MaterialTheme.colorScheme.background.copy(alpha = 0.97f))
-            .padding(bottom = bottomInset)
-            .height(TabBarHeight),
-        horizontalArrangement = Arrangement.SpaceEvenly,
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Tab.entries.forEach { tab ->
-            val icon = when (tab) {
-                Tab.HOME -> BitChordIcons.Home
-                Tab.EXPLORE -> BitChordIcons.TabExplore
-                Tab.LIBRARY -> BitChordIcons.TabLibrary
-                Tab.SEARCH -> BitChordIcons.TabSearch
-            }
-            val tint = if (tab == selected) AccentRed else MaterialTheme.colorScheme.onSurfaceVariant
-            Column(
-                Modifier.weight(1f).clickable { onSelect(tab) }.padding(vertical = 6.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-            ) {
-                Icon(icon, contentDescription = tab.label, tint = tint, modifier = Modifier.size(26.dp))
-                Text(tab.label, color = tint, fontSize = 11.sp, fontWeight = FontWeight.Medium)
-            }
-        }
-    }
-}
-
 // ---- Song menu ---------------------------------------------------------------------------------
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -874,20 +1068,6 @@ private fun MenuRow(icon: ImageVector, label: String, onClick: () -> Unit) {
 }
 
 // ---- Small parts -------------------------------------------------------------------------------
-
-@Composable
-private fun BackButton(modifier: Modifier, nav: Nav) {
-    IconButton(onClick = nav::back, modifier = modifier.padding(4.dp)) {
-        Box(Modifier.size(36.dp).clip(CircleShape).background(Color.Black.copy(alpha = 0.35f)), contentAlignment = Alignment.Center) {
-            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back", tint = Color.White)
-        }
-    }
-}
-
-@Composable
-private fun TopIcon(icon: ImageVector, modifier: Modifier, onClick: () -> Unit) {
-    IconButton(onClick = onClick, modifier = modifier.padding(8.dp)) { Icon(icon, contentDescription = null) }
-}
 
 @Composable
 private fun SectionTitle(text: String) {

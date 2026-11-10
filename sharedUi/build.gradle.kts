@@ -135,7 +135,7 @@ if (bitchordIos) {
             iosMain {
                 dependsOn(iosShared)
                 kotlin.srcDir("src/jvmMain/kotlin")
-                kotlin.exclude("**/ArtworkPixels.jvm.kt")
+                kotlin.exclude("**/ArtworkPixels.jvm.kt", "**/Haptics.jvm.kt")
                 dependencies {
                     implementation("io.coil-kt.coil3:coil-network-ktor3:3.0.4")
                     implementation("io.ktor:ktor-client-darwin:3.5.2")

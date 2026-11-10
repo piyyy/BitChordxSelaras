@@ -94,6 +94,7 @@ object IosSettings : PlayerSettingsSource {
 
     val autoplay = bool("autoplay", true)
     val darkTheme = bool("darkTheme", true)
+    val liquidGlass = bool("liquidGlass", false)
 
     /** Content language and region for YouTube Music, "" = follow the phone. */
     val contentLanguage = string("contentLanguage", "")
