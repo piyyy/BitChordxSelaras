@@ -24,6 +24,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBars
@@ -56,6 +57,7 @@ import androidx.compose.material.icons.filled.Shuffle
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.IosShare
+import androidx.compose.material3.BottomSheetDefaults
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -68,6 +70,8 @@ import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.SheetState
+import androidx.compose.material3.SheetValue
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -78,6 +82,7 @@ import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
@@ -91,8 +96,10 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
@@ -105,6 +112,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.res.AndroidStrings
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.TextStyle
@@ -112,6 +120,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -157,8 +166,11 @@ import com.music.bitchord.ui.components.floatingtabbar.rememberFloatingTabBarScr
 import com.music.bitchord.ui.components.isGlassSupported
 import com.music.bitchord.ui.components.topBarContentPadding
 import com.music.bitchord.ui.icons.BitChordIcons
+import com.music.bitchord.ui.player.LocalPlayerDock
 import com.music.bitchord.ui.player.NowPlayingScreen
+import com.music.bitchord.ui.player.PlayerDock
 import com.music.bitchord.ui.player.PlayerPlatform
+import com.music.bitchord.ui.player.PlayerSheetMotion
 import com.music.bitchord.ui.screens.DetailScreen
 import com.music.bitchord.ui.screens.ExploreScreen
 import com.music.bitchord.ui.screens.HomeScreen
@@ -282,6 +294,26 @@ private fun AppScaffold(appBackdrop: LayerBackdrop) {
     val glassSamplesBackdrop = glassActive && !reduceDynamicBlur
     val navBarScroll = rememberFloatingTabBarScrollConnection()
 
+    // The player sheet, as MainActivity moves it: the mini player's cover reports itself to the
+    // dock, the sheet its offset, and the artwork flies between them; the bar can be pulled up into
+    // the player. "Reduce animation" keeps M3's own slide instead.
+    val playerDock = remember { PlayerDock() }
+    val playerSheetScope = rememberCoroutineScope()
+    val playerSheetMotion = remember {
+        PlayerSheetMotion(
+            scope = playerSheetScope,
+            dock = playerDock,
+            shown = { showPlayer },
+            setShown = { showPlayer = it },
+        )
+    }
+    playerSheetMotion.windowInfo = LocalWindowInfo.current
+    val reducePlayerMotion by AppSettings.reduceAnimation.collectAsStateWithLifecycle()
+    val activeDock = playerDock.takeIf { !reducePlayerMotion }
+    playerSheetMotion.flingVelocity = with(LocalDensity.current) { 400.dp.toPx() }
+    val openPlayer: () -> Unit = { if (reducePlayerMotion) showPlayer = true else playerSheetMotion.open() }
+    val dismissPlayer: () -> Unit = { if (reducePlayerMotion) showPlayer = false else playerSheetMotion.close() }
+
     LaunchedEffect(Unit) {
         IosAppModel.loadHome()
         IosAppModel.loadExplore()
@@ -296,7 +328,7 @@ private fun AppScaffold(appBackdrop: LayerBackdrop) {
                 menuSong = song
                 menuFromPlayer = fromPlayer
             }
-            override fun player() { showPlayer = true }
+            override fun player() { openPlayer() }
             override fun newPlaylist() { creatingPlaylist = true }
         }
     }
@@ -530,7 +562,9 @@ private fun AppScaffold(appBackdrop: LayerBackdrop) {
                     onPlayPause = IosPlayer::togglePlay,
                     onNext = IosPlayer::next,
                     onPrevious = IosPlayer::previous,
-                    onExpand = { showPlayer = true },
+                    onExpand = openPlayer,
+                    dock = activeDock,
+                    pull = playerSheetMotion.takeIf { !reducePlayerMotion },
                     modifier = Modifier.fillMaxWidth(),
                 )
             }
@@ -552,7 +586,9 @@ private fun AppScaffold(appBackdrop: LayerBackdrop) {
                         onPlayPause = IosPlayer::togglePlay,
                         onNext = IosPlayer::next,
                         onPrevious = IosPlayer::previous,
-                        onExpand = { showPlayer = true },
+                        onExpand = openPlayer,
+                        dock = activeDock,
+                        pull = playerSheetMotion.takeIf { !reducePlayerMotion },
                         modifier = Modifier.fillMaxWidth(),
                     )
                     Spacer(Modifier.height(8.dp))
@@ -568,18 +604,66 @@ private fun AppScaffold(appBackdrop: LayerBackdrop) {
     }
 
     if (showPlayer && current != null) {
-        val sheet = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+        val sheetDensity = LocalDensity.current
+        val confirmSheetValue: (SheetValue) -> Boolean = { value ->
+            if (value == SheetValue.Hidden && !reducePlayerMotion) {
+                playerSheetMotion.close()
+                false
+            } else {
+                true
+            }
+        }
+        @Suppress("DEPRECATION")
+        val nowPlayingSheetState = remember {
+            SheetState(
+                skipPartiallyExpanded = true,
+                density = sheetDensity,
+                initialValue = if (playerSheetMotion.holding) SheetValue.Expanded else SheetValue.Hidden,
+                confirmValueChange = confirmSheetValue,
+            )
+        }
+        DisposableEffect(nowPlayingSheetState) {
+            playerSheetMotion.sheet = nowPlayingSheetState
+            playerDock.sheetOffset = playerSheetMotion::position
+            onDispose {
+                playerDock.sheetOffset = null
+                playerSheetMotion.onSheetGone()
+            }
+        }
         ModalBottomSheet(
             onDismissRequest = { showPlayer = false },
-            sheetState = sheet,
+            sheetState = nowPlayingSheetState,
+            scrimColor = if (reducePlayerMotion) BottomSheetDefaults.ScrimColor else Color.Transparent,
             shape = PlayerSheetShape,
             containerColor = Color.Transparent,
             dragHandle = null,
             contentWindowInsets = { WindowInsets(0, 0, 0, 0) },
             sheetMaxWidth = Dp.Unspecified,
         ) {
-            Box(Modifier.fillMaxSize().guardSheetFromContentTouches(sheet)) {
-                NowPlaying(nav, onClose = { showPlayer = false })
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .offset { IntOffset(0, playerSheetMotion.contentOffsetPx()) }
+                    .drawBehind {
+                        val open = playerDock.openFraction()
+                        if (!reducePlayerMotion && open > 0f && !(open >= 1f && playerDock.attached)) {
+                            val top = playerSheetMotion.position().takeUnless { it.isNaN() } ?: 0f
+                            drawRect(
+                                color = Color.Black.copy(alpha = 0.32f * open),
+                                topLeft = Offset(0f, -top.toInt().toFloat()),
+                                size = Size(size.width, size.height),
+                            )
+                        }
+                    }
+                    .guardSheetFromContentTouches(nowPlayingSheetState)
+                    .onSizeChanged {
+                        playerDock.sheetTravel = it.height.toFloat()
+                        playerSheetMotion.laidOut = true
+                    },
+            ) {
+                CompositionLocalProvider(LocalPlayerDock provides activeDock) {
+                    NowPlaying(nav, onClose = dismissPlayer)
+                }
             }
         }
     }
@@ -588,7 +672,7 @@ private fun AppScaffold(appBackdrop: LayerBackdrop) {
         SongMenu(
             song, menuFromPlayer, nav,
             onDismiss = { menuSong = null },
-            onClosePlayer = { showPlayer = false },
+            onClosePlayer = dismissPlayer,
             onAddToPlaylist = {
                 IosAppModel.loadPlaylists()
                 playlistTarget = song
