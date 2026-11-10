@@ -45,6 +45,7 @@ targets:
         CFBundleVersion: "1"
         LSRequiresIPhoneOS: true
         UIBackgroundModes: [audio]
+        CADisableMinimumFrameDurationOnPhone: true
         UILaunchScreen: {}
         UIApplicationSceneManifest:
           UIApplicationSupportsMultipleScenes: false
