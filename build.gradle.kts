@@ -75,3 +75,16 @@ plugins {
     id("org.jetbrains.kotlin.plugin.serialization") version "2.3.20" apply false
     id("org.jetbrains.compose") version "1.10.3" apply false
 }
+
+// iOS (-Pbitchord.ios=true): every klib is linked into one Kotlin/Native binary, so all modules
+// must compile against the same material3 — the one paired with CMP 1.10. The phone's 1.7.3 pin
+// reads compose internals that later versions made private (IrLinkageError at launch).
+if (providers.gradleProperty("bitchord.ios").orNull == "true") {
+    subprojects {
+        configurations.all {
+            resolutionStrategy.eachDependency {
+                if (requested.group == "org.jetbrains.compose.material3") useVersion("1.10.0-alpha05")
+            }
+        }
+    }
+}

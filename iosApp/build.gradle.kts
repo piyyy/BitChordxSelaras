@@ -14,15 +14,7 @@ plugins {
 
 val cmp = "1.10.3"
 
-// The phone pins material3 1.7.3 (its androidx anchor), but on iOS every klib is linked into
-// one binary against compose runtime 1.10.x, and 1.7.3 reaches into runtime internals that
-// 1.10 made private (IrLinkageError at launch). Link the material3 that ships with CMP 1.10.
-val material3 = "1.10.0-alpha05"
-configurations.all {
-    resolutionStrategy.eachDependency {
-        if (requested.group == "org.jetbrains.compose.material3") useVersion(material3)
-    }
-}
+val material3 = "1.10.0-alpha05" // forced for every module on iOS, see the root build file
 
 kotlin {
     listOf(iosArm64(), iosSimulatorArm64()).forEach { target ->
