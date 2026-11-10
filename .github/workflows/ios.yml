@@ -106,7 +106,7 @@ jobs:
           brew install xcodegen
           (cd ios && xcodegen generate)
           xcodebuild -project ios/BitChord.xcodeproj -scheme BitChord -configuration Release \
-            -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' -derivedDataPath build \
+            -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' -derivedDataPath build ARCHS=arm64 ONLY_ACTIVE_ARCH=YES \
             CODE_SIGNING_ALLOWED=NO build | tee build.log | xcpretty || (tail -200 build.log; exit 1)
       - name: Launch every tab, screenshot, collect logs
         run: |
