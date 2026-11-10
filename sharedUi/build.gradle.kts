@@ -115,3 +115,32 @@ compose.resources {
     packageOfResClass = "com.music.bitchord.sharedui.resources"
     generateResClass = always
 }
+
+// ---- iOS (BitChordxSelaras) -------------------------------------------------------------------
+// Off unless -Pbitchord.ios=true. Like :shared, the iOS build compiles the JVM sources in place:
+// jvmSharedMain (with its `expect`s) as `iosShared`, and the desktop's Skia actuals from jvmMain —
+// iOS draws with the same Skia — in iosMain. Only ArtworkPixels.jvm.kt (java.nio) has an iOS copy.
+val bitchordIos = providers.gradleProperty("bitchord.ios").orNull == "true"
+if (bitchordIos) {
+    kotlin {
+        iosArm64()
+        iosSimulatorArm64()
+        compilerOptions.freeCompilerArgs.add("-Xnested-type-aliases")
+        sourceSets {
+            val iosShared by creating {
+                dependsOn(commonMain.get())
+                kotlin.srcDir("src/jvmSharedMain/kotlin")
+                kotlin.srcDir("src/iosShared/kotlin")
+            }
+            iosMain {
+                dependsOn(iosShared)
+                kotlin.srcDir("src/jvmMain/kotlin")
+                kotlin.exclude("**/ArtworkPixels.jvm.kt")
+                dependencies {
+                    implementation("io.coil-kt.coil3:coil-network-ktor3:3.0.4")
+                    implementation("io.ktor:ktor-client-darwin:3.5.2")
+                }
+            }
+        }
+    }
+}
