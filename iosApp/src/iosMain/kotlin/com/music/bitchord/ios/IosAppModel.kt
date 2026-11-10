@@ -8,6 +8,8 @@ import com.music.bitchord.data.model.BrowseItem
 import com.music.bitchord.data.model.BrowseType
 import com.music.bitchord.data.model.DetailPage
 import com.music.bitchord.data.model.LibraryState
+import com.music.bitchord.data.model.PlaylistPrivacy
+import com.music.bitchord.data.model.UserPlaylist
 import com.music.bitchord.data.model.EntityType
 import com.music.bitchord.data.model.HomeShelf
 import com.music.bitchord.data.model.LibraryPage
@@ -483,6 +485,64 @@ object IosAppModel {
                     )
                 }
             }
+        }
+    }
+
+    // ---- Playlists: the "Add to playlist" sheet (MainViewModel.loadPlaylists / addToPlaylists) ----
+
+    val playlists = MutableStateFlow<List<UserPlaylist>>(emptyList())
+    val playlistsLoading = MutableStateFlow(false)
+
+    fun loadPlaylists() {
+        if (!IosAccount.signedIn.value || playlistsLoading.value) return
+        playlistsLoading.value = true
+        scope.launch {
+            YtMusicRepository.userPlaylists().onSuccess { playlists.value = it }
+            playlistsLoading.value = false
+        }
+    }
+
+    /** Adds [song] to each of [targets]; [onResult] gets (added, alreadyThere, failed). */
+    fun addToPlaylists(targets: List<UserPlaylist>, song: Song, onResult: (Int, Int, Int) -> Unit) {
+        if (targets.isEmpty()) return
+        scope.launch {
+            var added = 0
+            var already = 0
+            var failed = 0
+            for (playlist in targets) {
+                val known = (pages.value[playlist.browseId]?.songs as? UiState.Success)?.data
+                    ?: YtMusicRepository.allSongs(playlist.browseId).getOrNull()
+                if (known?.any { it.videoId == song.videoId } == true) {
+                    already++
+                    continue
+                }
+                YtMusicRepository.addToPlaylist(playlist.playlistId, listOf(song.videoId)).fold(
+                    onSuccess = {
+                        added++
+                        updatePage(playlist.browseId) { page ->
+                            val songs = (page.songs as? UiState.Success)?.data ?: return@updatePage page
+                            page.copy(songs = UiState.Success(songs + song))
+                        }
+                    },
+                    onFailure = { failed++ },
+                )
+            }
+            if (added > 0) loadLibrary(refresh = true)
+            onResult(added, already, failed)
+        }
+    }
+
+    fun createPlaylist(title: String, privacy: PlaylistPrivacy, song: Song?) {
+        val name = title.trim().ifBlank {
+            androidx.compose.ui.res.AndroidStrings.string(com.music.bitchord.R.string.new_playlist)
+        }
+        scope.launch {
+            YtMusicRepository.createPlaylist(name, privacy, listOfNotNull(song?.videoId)).onSuccess { playlistId ->
+                playlists.update {
+                    listOf(UserPlaylist(playlistId = playlistId, title = name, subtitle = if (song != null) "1 song" else "", thumbnailUrl = song?.thumbnailUrl)) + it
+                }
+                loadLibrary(refresh = true)
+            }.onFailure { IosPlayer.bridge.toast(it.message ?: "Couldn't create the playlist") }
         }
     }
 

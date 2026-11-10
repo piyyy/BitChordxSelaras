@@ -105,6 +105,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.res.AndroidStrings
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -144,6 +145,7 @@ import com.music.bitchord.ui.components.GlassNavBar
 import com.music.bitchord.ui.components.LocalAppBackdrop
 import com.music.bitchord.ui.components.LocalLiquidGlassEnabled
 import com.music.bitchord.ui.components.MiniPlayer
+import com.music.bitchord.ui.components.PlaylistPickerSheet
 import com.music.bitchord.ui.components.SearchField
 import com.music.bitchord.ui.components.SongActionsSheet
 import com.music.bitchord.ui.components.SongRow
@@ -262,6 +264,8 @@ private fun AppScaffold(appBackdrop: LayerBackdrop) {
     var showPlayer by remember { mutableStateOf(false) }
     var menuSong by remember { mutableStateOf<Song?>(null) }
     var menuFromPlayer by remember { mutableStateOf(false) }
+    var playlistTarget by remember { mutableStateOf<Song?>(null) }
+    var creatingPlaylist by remember { mutableStateOf(false) }
     var searchFocusRequested by remember { mutableStateOf(false) }
     val current by IosPlayer.current.collectAsStateWithLifecycle()
     val playing by IosPlayer.isPlaying.collectAsStateWithLifecycle()
@@ -293,6 +297,7 @@ private fun AppScaffold(appBackdrop: LayerBackdrop) {
                 menuFromPlayer = fromPlayer
             }
             override fun player() { showPlayer = true }
+            override fun newPlaylist() { creatingPlaylist = true }
         }
     }
 
@@ -580,7 +585,60 @@ private fun AppScaffold(appBackdrop: LayerBackdrop) {
     }
 
     menuSong?.let { song ->
-        SongMenu(song, menuFromPlayer, nav, onDismiss = { menuSong = null }, onClosePlayer = { showPlayer = false })
+        SongMenu(
+            song, menuFromPlayer, nav,
+            onDismiss = { menuSong = null },
+            onClosePlayer = { showPlayer = false },
+            onAddToPlaylist = {
+                IosAppModel.loadPlaylists()
+                playlistTarget = song
+            },
+        )
+    }
+
+    // "Add to playlist" and "New playlist": the phone's PlaylistPickerSheet.
+    if (playlistTarget != null || creatingPlaylist) {
+        val target = playlistTarget
+        val dismiss = {
+            playlistTarget = null
+            creatingPlaylist = false
+        }
+        val playlists by IosAppModel.playlists.collectAsStateWithLifecycle()
+        val playlistsLoading by IosAppModel.playlistsLoading.collectAsStateWithLifecycle()
+        val addedOne = stringResource(R.string.song_added_to_playlist)
+        val alreadyThere = stringResource(R.string.song_already_in_playlist)
+        val failedText = stringResource(R.string.failed)
+        ModalBottomSheet(
+            onDismissRequest = dismiss,
+            containerColor = MaterialTheme.colorScheme.background,
+        ) {
+            PlaylistPickerSheet(
+                playlists = playlists,
+                loading = playlistsLoading,
+                song = target,
+                startCreating = target == null,
+                onAdd = { picked ->
+                    target?.let { song ->
+                        IosAppModel.addToPlaylists(picked, song) { added, already, failed ->
+                            IosPlayer.bridge.toast(
+                                when {
+                                    added > 1 -> AndroidStrings.plural(R.plurals.added_to_playlists_notice, added)
+                                        .let { com.music.bitchord.ioscompat.jvmFormat(it, arrayOf(added)) }
+                                    added == 1 -> addedOne
+                                    already > 0 && failed == 0 -> alreadyThere
+                                    else -> failedText
+                                },
+                            )
+                        }
+                    }
+                    dismiss()
+                },
+                onCreate = { title, privacy ->
+                    IosAppModel.createPlaylist(title, privacy, target)
+                    dismiss()
+                },
+            )
+        }
     }
 }
 
@@ -598,6 +656,7 @@ interface Nav {
     fun back()
     fun menu(song: Song, fromPlayer: Boolean = false)
     fun player()
+    fun newPlaylist()
 }
 
 /** Where a card or result leads: a track plays, anything else opens its page. */
@@ -674,7 +733,7 @@ private fun TabRoot(tab: Int, padding: PaddingValues, listState: LazyListState, 
                 listState = listState,
                 onShelfItemClick = { nav.openItem(it) },
                 onShelfItemLongPress = { item -> item.videoId?.let { nav.menu(Song(it, item.title, item.subtitle, item.thumbnailUrl)) } },
-                onNewPlaylist = { IosPlayer.bridge.toast("Create playlists on music.youtube.com for now") },
+                onNewPlaylist = { nav.newPlaylist() },
                 onShowAll = { shelf -> shelf.moreBrowseId?.let { nav.open(Route.Shelves(shelf.title, it, shelf.moreParams)) } },
                 replay = {},
                 onSignIn = { IosPlayer.bridge.openSignIn() },
@@ -1029,7 +1088,14 @@ private fun NowPlaying(nav: Nav, onClose: () -> Unit) {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun SongMenu(song: Song, fromPlayer: Boolean, nav: Nav, onDismiss: () -> Unit, onClosePlayer: () -> Unit) {
+private fun SongMenu(
+    song: Song,
+    fromPlayer: Boolean,
+    nav: Nav,
+    onDismiss: () -> Unit,
+    onClosePlayer: () -> Unit,
+    onAddToPlaylist: () -> Unit,
+) {
     val signedIn by IosAccount.signedIn.collectAsStateWithLifecycle()
     val likes by IosPlayer.likeStatuses.collectAsStateWithLifecycle()
     LaunchedEffect(song.videoId) { IosPlayer.loadSongMenu(song.videoId) }
@@ -1051,7 +1117,7 @@ private fun SongMenu(song: Song, fromPlayer: Boolean, nav: Nav, onDismiss: () ->
             onToggleDislike = { IosPlayer.toggleDislike(song.videoId) },
             onAddToPlaylist = {
                 onDismiss()
-                IosPlayer.bridge.toast("Adding to playlists isn't available on iOS yet")
+                onAddToPlaylist()
             },
             onOpenAlbum = { id ->
                 onDismiss()
