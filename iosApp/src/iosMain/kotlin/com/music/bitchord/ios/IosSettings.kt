@@ -94,6 +94,15 @@ object IosSettings : PlayerSettingsSource {
 
     val autoplay = bool("autoplay", true)
     val darkTheme = bool("darkTheme", true)
+
+    /** "SYSTEM" / "LIGHT" / "DARK", as the phone's ThemeMode. */
+    val THEMES = listOf("SYSTEM", "LIGHT", "DARK")
+    val themeMode = string("themeMode", "SYSTEM")
+
+    fun setThemeMode(value: String) {
+        themeMode.value = value
+        defaults.setObject(value, "themeMode")
+    }
     val liquidGlass = bool("liquidGlass", false)
 
     /** Content language and region for YouTube Music, "" = follow the phone. */

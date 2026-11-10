@@ -226,7 +226,12 @@ private val BitChordTypography = Typography(
 
 @Composable
 fun BitChordIosTheme(content: @Composable () -> Unit) {
-    val dark = isSystemInDarkTheme()
+    val theme by IosSettings.themeMode.collectAsStateWithLifecycle()
+    val dark = when (theme) {
+        "LIGHT" -> false
+        "DARK" -> true
+        else -> isSystemInDarkTheme()
+    }
     MaterialTheme(
         colorScheme = if (dark) DarkColors else LightColors,
         typography = BitChordTypography,
@@ -429,7 +434,7 @@ private fun AppScaffold(appBackdrop: LayerBackdrop) {
                     onSearchingChange = {},
                 )
                 is Route.Shelves -> ShelvesPage(shown, listPadding, listState, nav)
-                Route.Settings -> SettingsPage(listPadding, listState)
+                Route.Settings -> IosSettingsPage(listPadding, listState)
             }
         }
 
@@ -1007,81 +1012,6 @@ private fun ShelfCarousel(shelf: HomeShelf, nav: Nav) {
             }
         }
     }
-}
-
-// ---- Settings ----------------------------------------------------------------------------------
-
-@Composable
-private fun SettingsPage(padding: PaddingValues, listState: LazyListState) {
-    val signedIn by IosAccount.signedIn.collectAsStateWithLifecycle()
-    val account by IosAccount.account.collectAsStateWithLifecycle()
-    val autoplay by IosSettings.autoplay.collectAsStateWithLifecycle()
-    val synced by IosSettings.syncedLyrics.collectAsStateWithLifecycle()
-    val blur by IosSettings.lyricsBlur.collectAsStateWithLifecycle()
-    val reduce by IosSettings.reduceAnimation.collectAsStateWithLifecycle()
-    val liquidGlass by AppSettings.liquidGlass.collectAsStateWithLifecycle()
-    val reduceBlur by AppSettings.reduceDynamicBlur.collectAsStateWithLifecycle()
-    LazyColumn(Modifier.fillMaxSize(), state = listState, contentPadding = PaddingValues(top = padding.calculateTopPadding(), bottom = padding.calculateBottomPadding())) {
-        item { SectionTitle("Account") }
-        item {
-            if (signedIn) {
-                ListItem(
-                    headlineContent = { Text(account?.name ?: "Signed in") },
-                    supportingContent = { Text(account?.email ?: "YouTube Music") },
-                    leadingContent = {
-                        AsyncImage(account?.thumbnailUrl, null, Modifier.size(40.dp).clip(CircleShape).background(MaterialTheme.colorScheme.surfaceVariant))
-                    },
-                    trailingContent = { TextButton(onClick = { IosPlayer.bridge.signOut() }) { Text("Sign out") } },
-                    colors = ListItemDefaults.colors(containerColor = Color.Transparent),
-                )
-            } else {
-                ListItem(
-                    headlineContent = { Text("Sign in to YouTube Music") },
-                    supportingContent = { Text("Your library, likes and personal recommendations") },
-                    leadingContent = { Icon(Icons.Filled.Login, null) },
-                    modifier = Modifier.clickable { IosPlayer.bridge.openSignIn() },
-                    colors = ListItemDefaults.colors(containerColor = Color.Transparent),
-                )
-            }
-        }
-        item { SectionTitle("Sound") }
-        item {
-            ListItem(
-                headlineContent = { Text("Selaras equalizer") },
-                supportingContent = { Text("Parametric EQ, AutoEq headphone profiles, per output") },
-                leadingContent = { Icon(Icons.Filled.Equalizer, null) },
-                modifier = Modifier.clickable { IosPlayer.bridge.openSelaras() },
-                colors = ListItemDefaults.colors(containerColor = Color.Transparent),
-            )
-        }
-        item { Toggle("AutoPlay", "Keep playing similar music when the queue ends", autoplay) { IosSettings.set(IosSettings.autoplay, "autoplay", it) } }
-        item { SectionTitle("Lyrics") }
-        item { Toggle("Synced lyrics", "Follow the song line by line", synced) { IosSettings.set(IosSettings.syncedLyrics, "syncedLyrics", it) } }
-        item { Toggle("Blur other lines", "Focus on the line being sung", blur) { IosSettings.set(IosSettings.lyricsBlur, "lyricsBlur", it) } }
-        item { SectionTitle("Appearance") }
-        item { Toggle("Liquid glass", "The floating tab bar and buttons as refracting glass", liquidGlass) { AppSettings.setLiquidGlass(it) } }
-        item { Toggle("Reduce dynamic blur", null, reduceBlur) { AppSettings.setReduceDynamicBlur(it) } }
-        item { Toggle("Reduce animation", null, reduce) { IosSettings.set(IosSettings.reduceAnimation, "reduceAnimation", it) } }
-        item {
-            Text(
-                "BitChord for iOS · BitChordxSelaras",
-                Modifier.padding(20.dp),
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                fontSize = 12.sp,
-            )
-        }
-    }
-}
-
-@Composable
-private fun Toggle(title: String, subtitle: String?, value: Boolean, onChange: (Boolean) -> Unit) {
-    ListItem(
-        headlineContent = { Text(title) },
-        supportingContent = subtitle?.let { { Text(it) } },
-        trailingContent = { Switch(checked = value, onCheckedChange = onChange) },
-        modifier = Modifier.clickable { onChange(!value) },
-        colors = ListItemDefaults.colors(containerColor = Color.Transparent),
-    )
 }
 
 // ---- Now Playing: the phone's player, whole --------------------------------------------------------
