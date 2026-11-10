@@ -7,7 +7,7 @@ import com.music.bitchord.ioscompat.jvmFormat
 
 /**
  * java.lang names the phone's UI files use without an import. The iOS build copies those files
- * (see iosApp/build.gradle.kts, `androidPort`) and adds `import com.music.bitchord.ios.port.*`.
+ * (see iosApp/build.gradle.kts, `androidPort`) and imports these by name.
  */
 typealias System = com.music.bitchord.ioscompat.JSystem
 typealias Math = com.music.bitchord.ioscompat.JMath
@@ -21,7 +21,6 @@ inline fun String.uppercase(locale: java.util.Locale): String = uppercase()
 inline fun Char.lowercase(locale: java.util.Locale): String = lowercase()
 inline fun Char.uppercase(locale: java.util.Locale): String = uppercase()
 inline fun Char.titlecase(locale: java.util.Locale): String = titlecase()
-inline fun String.replaceFirstChar(locale: java.util.Locale, transform: (Char) -> CharSequence): String = replaceFirstChar(transform)
 inline fun String.toByteArray(charset: java.nio.charset.Charset = JCharset.UTF_8): ByteArray = encodeToByteArray()
 inline fun ByteArray.toString(charset: java.nio.charset.Charset): String = decodeToString()
 fun <K, V> MutableMap<K, V>.putIfAbsent(key: K, value: V): V? = get(key) ?: run { put(key, value); null }
@@ -69,3 +68,10 @@ open class LinkedHashMap<K, V>(
     override fun containsKey(key: K): Boolean = map.containsKey(key)
     override fun clear() = map.clear()
 }
+
+/** `x.javaClass.simpleName`, which the phone's pages use in log lines. */
+class JClass(val simpleName: String) {
+    val name: String get() = simpleName
+}
+
+val Any.javaClass: JClass get() = JClass(this::class.simpleName ?: "Object")

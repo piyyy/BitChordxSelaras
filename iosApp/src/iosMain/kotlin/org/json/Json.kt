@@ -35,6 +35,31 @@ private fun unwrap(v: Any?): JsonElement = when (v) {
     else -> JsonPrimitive(v.toString())
 }
 
+private fun parseElement(source: String): JsonElement? =
+    try {
+        Json.parseToJsonElement(source)
+    } catch (e: Exception) {
+        null
+    }
+
+private fun objectMap(obj: JsonObject): MutableMap<String, Any?> {
+    val m = LinkedHashMap<String, Any?>()
+    for ((k, v) in obj) m[k] = wrap(v)
+    return m
+}
+
+private fun arrayList(arr: JsonArray): MutableList<Any?> {
+    val list = ArrayList<Any?>()
+    for (v in arr) list.add(wrap(v))
+    return list
+}
+
+private fun parseObject(source: String): MutableMap<String, Any?> =
+    (parseElement(source) as? JsonObject)?.let(::objectMap) ?: throw JSONException("Not a JSON object")
+
+private fun parseArray(source: String): MutableList<Any?> =
+    (parseElement(source) as? JsonArray)?.let(::arrayList) ?: throw JSONException("Not a JSON array")
+
 private fun Any?.asLong(): Long? = when (this) {
     is Number -> toLong()
     is String -> toLongOrNull() ?: toDoubleOrNull()?.toLong()
@@ -55,12 +80,8 @@ private fun Any?.asBoolean(): Boolean? = when (this) {
 
 class JSONObject internal constructor(internal val map: MutableMap<String, Any?>) {
     constructor() : this(LinkedHashMap())
-    constructor(source: String) : this(
-        (runCatching { Json.parseToJsonElement(source) }.getOrNull() as? JsonObject)?.let { obj ->
-            LinkedHashMap<String, Any?>().also { m -> obj.forEach { (k, v) -> m[k] = wrap(v) } }
-        } ?: throw JSONException("Not a JSON object"),
-    )
-    internal constructor(obj: JsonObject) : this(LinkedHashMap<String, Any?>().also { m -> obj.forEach { (k, v) -> m[k] = wrap(v) } })
+    constructor(source: String) : this(parseObject(source))
+    internal constructor(obj: JsonObject) : this(objectMap(obj))
     constructor(from: Map<String, Any?>) : this(LinkedHashMap(from))
 
     fun has(name: String): Boolean = map.containsKey(name)
@@ -110,11 +131,8 @@ class JSONObject internal constructor(internal val map: MutableMap<String, Any?>
 
 class JSONArray internal constructor(internal val list: MutableList<Any?>) {
     constructor() : this(ArrayList())
-    constructor(source: String) : this(
-        (runCatching { Json.parseToJsonElement(source) }.getOrNull() as? JsonArray)?.mapTo(ArrayList()) { wrap(it) }
-            ?: throw JSONException("Not a JSON array"),
-    )
-    internal constructor(arr: JsonArray) : this(arr.mapTo(ArrayList()) { wrap(it) })
+    constructor(source: String) : this(parseArray(source))
+    internal constructor(arr: JsonArray) : this(arrayList(arr))
     constructor(from: Collection<*>) : this(from.toMutableList<Any?>())
 
     fun length(): Int = list.size

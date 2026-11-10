@@ -18,7 +18,7 @@ val material3 = "1.10.0-alpha05" // forced for every module on iOS, see the root
 
 /*
  * The phone app's own UI files (app/src/main/java), compiled unchanged for iOS: copied into the
- * build with `import com.music.bitchord.ios.port.*` added (java.lang stand-ins) and the
+ * build with the java.lang stand-ins in com.music.bitchord.ios.port imported, and the
  * Android-only lint annotations dropped. What they reach that is Android-only has an iOS
  * counterpart in src/iosMain: R + stringResource (strings from app/src/main/res, see
  * ios/kmp/gen-android-strings.py), AppSettings, android.os.Build, android.view.Window, and the
@@ -73,15 +73,24 @@ val androidPortFiles = listOf(
     "ui/components/SongActionsSheet.kt",
     "playback/SleepTimer.kt",
     "ui/components/PlaylistPickerSheet.kt",
+    "ui/components/ArtworkBackdrop.kt",
 )
 
 val androidPort by tasks.registering(Sync::class) {
     from(rootProject.file("app/src/main/java/com/music/bitchord")) { include(androidPortFiles) }
     into(layout.buildDirectory.dir("generated/androidPort/kotlin/com/music/bitchord"))
-    val lint = Regex("""@(param:)?(FloatRange|RequiresApi|ChecksSdkIntAtLeast|Language)\([^)]*\)\s*""")
+    val lint = Regex(
+        """@(param:|field:)?(FloatRange|IntRange|RequiresApi|ChecksSdkIntAtLeast|Language|StringRes|PluralsRes|DrawableRes|ColorInt|Px|UiThread|MainThread|WorkerThread|Keep)(\([^)]*\))?\s*""",
+    )
+    // Imported by name, not with a star: a star import ranks below the package's own
+    // declarations, and :shared/:sharedUi keep internal stand-ins in these same packages.
+    val portImports = listOf(
+        "System", "Math", "format", "lowercase", "uppercase", "titlecase", "synchronized",
+        "LinkedHashMap", "IO", "putIfAbsent", "getOrDefault", "toByteArray", "javaClass",
+    ).joinToString("\n") { "import com.music.bitchord.ios.port.$it" }
     filter { line: String ->
         when {
-            line.startsWith("package ") -> line + "\n\nimport com.music.bitchord.ios.port.*"
+            line.startsWith("package ") -> line + "\n\n" + portImports
             line.startsWith("import androidx.annotation.") || line.startsWith("import org.intellij.lang.annotations.") -> ""
             else -> line.replace(lint, "")
         }
