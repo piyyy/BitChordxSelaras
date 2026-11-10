@@ -51,6 +51,7 @@ import androidx.compose.ui.unit.dp
 import coil3.compose.AsyncImage
 import com.music.bitchord.R
 import com.music.bitchord.data.model.Account
+import com.music.bitchord.ios.port.*
 import com.music.bitchord.ui.components.thumbnailBorder
 import java.util.Locale
 
