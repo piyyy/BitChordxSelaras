@@ -6,6 +6,8 @@ import com.music.bitchord.data.model.Account
 import com.music.bitchord.data.model.ArtistPage
 import com.music.bitchord.data.model.BrowseItem
 import com.music.bitchord.data.model.BrowseType
+import com.music.bitchord.data.model.DetailPage
+import com.music.bitchord.data.model.LibraryState
 import com.music.bitchord.data.model.EntityType
 import com.music.bitchord.data.model.HomeShelf
 import com.music.bitchord.data.model.LibraryPage
@@ -23,6 +25,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import com.music.bitchord.playback.contextEntryKey
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
 import platform.Foundation.NSUserDefaults
@@ -302,6 +305,184 @@ object IosAppModel {
                 { UiState.Error(it.message ?: "Couldn't load the artist") },
             )
             artists.update { it + (browseId to state) }
+        }
+    }
+
+    // ---- Album / playlist / artist pages: MainViewModel.openDetail, as the phone loads them ----
+
+    val pages = MutableStateFlow<Map<String, DetailPage>>(emptyMap())
+    private val fillInJobs = mutableMapOf<String, Job>()
+
+    /** YouTube's browse ids are prefixed by kind (MainViewModel.browseTypeOf). */
+    fun browseTypeOf(browseId: String, fallback: BrowseType = BrowseType.OTHER): BrowseType = when {
+        browseId.startsWith("UC") -> BrowseType.ARTIST
+        browseId.startsWith("MPREb") || browseId.startsWith("VLOLAK") || browseId.startsWith("OLAK") -> BrowseType.ALBUM
+        browseId.startsWith("VL") || browseId.startsWith("PL") -> BrowseType.PLAYLIST
+        else -> fallback
+    }
+
+    private fun List<Song>.withArtwork(fallback: String?): List<Song> {
+        if (fallback == null) return this
+        return map { if (it.thumbnailUrl == null) it.copy(thumbnailUrl = fallback) else it }
+    }
+
+    private fun updatePage(browseId: String, change: (DetailPage) -> DetailPage) =
+        pages.update { map -> map[browseId]?.let { map + (browseId to change(it)) } ?: map }
+
+    fun openPage(
+        browseId: String,
+        title: String,
+        subtitle: String = "",
+        thumbnailUrl: String? = null,
+        type: BrowseType = BrowseType.OTHER,
+    ) {
+        val existing = pages.value[browseId]
+        if (existing != null && existing.songs !is UiState.Error) return
+        val resolved = browseTypeOf(browseId, type)
+        pages.update {
+            it + (browseId to DetailPage(browseId, title, subtitle, thumbnailUrl, UiState.Loading, resolved))
+        }
+        scope.launch {
+            var sections = emptyList<HomeShelf>()
+            var artwork: String? = null
+            var name: String? = null
+            var credit: String? = null
+            var more: String? = null
+            var suggested: List<Song> = emptyList()
+            var library: LibraryState? = null
+            var description: String? = null
+            var subscriberCountText: String? = null
+            var monthlyListenerCount: String? = null
+            var subscription: com.music.bitchord.data.model.SubscriptionState? = null
+            val state: UiState<List<Song>> = if (resolved == BrowseType.ARTIST) {
+                YtMusicRepository.artistPage(browseId).fold(
+                    onSuccess = { page ->
+                        sections = page.sections
+                        artwork = page.thumbnailUrl
+                        name = page.name
+                        description = page.description
+                        subscriberCountText = page.subscriberCountText
+                        monthlyListenerCount = page.monthlyListenerCount
+                        subscription = page.subscription
+                        if (page.songs.isEmpty()) {
+                            UiState.Error(androidx.compose.ui.res.AndroidStrings.string(com.music.bitchord.R.string.no_tracks_here))
+                        } else {
+                            UiState.Success(page.songs.withArtwork(thumbnailUrl ?: artwork))
+                        }
+                    },
+                    onFailure = { UiState.Error(it.message ?: "Couldn't load") },
+                )
+            } else {
+                YtMusicRepository.browseSongs(browseId).fold(
+                    onSuccess = { page ->
+                        page.header?.let { header ->
+                            if (title.isBlank()) name = header.title
+                            if (resolved == BrowseType.ALBUM && header.subtitle.isNotBlank()) {
+                                credit = header.subtitle
+                            } else if (subtitle.isBlank()) {
+                                credit = header.subtitle
+                            }
+                            if (thumbnailUrl == null) artwork = header.thumbnailUrl
+                        }
+                        description = page.description
+                        if (page.songs.isEmpty()) {
+                            UiState.Error(androidx.compose.ui.res.AndroidStrings.string(com.music.bitchord.R.string.no_tracks_here))
+                        } else {
+                            more = page.continuation
+                            suggested = page.suggested.withArtwork(thumbnailUrl ?: artwork)
+                            library = page.library
+                            UiState.Success(page.songs.withArtwork(thumbnailUrl ?: artwork))
+                        }
+                    },
+                    onFailure = { UiState.Error(it.message ?: "Couldn't load") },
+                )
+            }
+            updatePage(browseId) {
+                it.copy(
+                    songs = state,
+                    sections = sections,
+                    thumbnailUrl = artwork ?: it.thumbnailUrl,
+                    title = name ?: it.title,
+                    subtitle = credit ?: it.subtitle,
+                    suggestedSongs = suggested,
+                    continuation = more,
+                    library = library,
+                    description = description,
+                    subscriberCountText = subscriberCountText,
+                    monthlyListenerCount = monthlyListenerCount,
+                    subscription = subscription,
+                )
+            }
+            more?.let { fillIn(browseId, it, thumbnailUrl ?: artwork) }
+        }
+    }
+
+    /** Walks a long playlist's continuation until every track is in (MainViewModel.fillIn). */
+    private fun fillIn(browseId: String, token: String, artworkFallback: String?) {
+        fillInJobs[browseId]?.cancel()
+        fillInJobs[browseId] = scope.launch {
+            delay(150)
+            var next: String? = token
+            while (next != null) {
+                val fetched = YtMusicRepository.moreSongs(next).getOrNull() ?: return@launch
+                val current = pages.value[browseId] ?: return@launch
+                val existing = (current.songs as? UiState.Success)?.data ?: return@launch
+                val known = existing.mapTo(HashSet()) { it.contextEntryKey() }
+                val added = fetched.songs.filter { known.add(it.contextEntryKey()) }.withArtwork(artworkFallback)
+                val knownVideoIds = (existing + added).mapTo(HashSet()) { it.videoId }
+                val knownSuggested = current.suggestedSongs.mapTo(HashSet()) { it.videoId }
+                val addedSuggested = fetched.suggested
+                    .filter { it.videoId !in knownVideoIds && knownSuggested.add(it.videoId) }
+                    .withArtwork(artworkFallback)
+                if (added.isEmpty() && addedSuggested.isEmpty()) return@launch
+                updatePage(browseId) {
+                    it.copy(
+                        songs = UiState.Success(existing + added),
+                        suggestedSongs = it.suggestedSongs + addedSuggested,
+                        continuation = fetched.continuation,
+                    )
+                }
+                next = fetched.continuation
+            }
+        }
+    }
+
+    fun toggleLibrary(browseId: String) {
+        val current = pages.value[browseId]?.library ?: return
+        val target = !current.saved
+        updatePage(browseId) { it.copy(library = current.copy(saved = target)) }
+        scope.launch {
+            if (YtMusicRepository.setSaved(current.playlistId, target).isFailure) {
+                updatePage(browseId) { it.copy(library = current) }
+            } else {
+                loadLibrary(refresh = true)
+            }
+        }
+    }
+
+    fun toggleSubscription(browseId: String) {
+        val current = pages.value[browseId]?.subscription ?: return
+        val target = !current.subscribed
+        updatePage(browseId) { it.copy(subscription = current.copy(subscribed = target)) }
+        scope.launch {
+            if (YtMusicRepository.setSubscribed(current.channelId, target).isFailure) {
+                updatePage(browseId) { it.copy(subscription = current) }
+            }
+        }
+    }
+
+    fun addSuggestedSong(browseId: String, song: Song) {
+        val playlistId = browseId.removePrefix("VL")
+        scope.launch {
+            YtMusicRepository.addToPlaylist(playlistId, listOf(song.videoId)).onSuccess {
+                updatePage(browseId) { page ->
+                    val songs = (page.songs as? UiState.Success)?.data.orEmpty()
+                    page.copy(
+                        suggestedSongs = page.suggestedSongs.filterNot { it.videoId == song.videoId },
+                        songs = UiState.Success(songs + song),
+                    )
+                }
+            }
         }
     }
 

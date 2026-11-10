@@ -62,6 +62,13 @@ val androidPortFiles = listOf(
     "ui/components/backdrop/highlight/Highlight.kt",
     "ui/components/backdrop/highlight/HighlightModifier.kt",
     "ui/components/backdrop/highlight/HighlightStyle.kt",
+    // Album / playlist / artist pages.
+    "ui/screens/DetailScreen.kt",
+    "ui/screens/LocalFolder.kt",
+    "data/LocalGroups.kt",
+    "ui/components/CoverPlaceholder.kt",
+    "data/canvas/AppleArtistArt.kt",
+    "data/canvas/ArtistSignatures.kt",
 )
 
 val androidPort by tasks.registering(Sync::class) {

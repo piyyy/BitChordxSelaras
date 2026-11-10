@@ -54,6 +54,8 @@ import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Shuffle
 import androidx.compose.material.icons.filled.SkipNext
+import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.IosShare
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -81,6 +83,7 @@ import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -118,6 +121,7 @@ import com.music.bitchord.data.YtMusicRepository
 import com.music.bitchord.data.model.BrowseItem
 import com.music.bitchord.data.model.BrowseType
 import com.music.bitchord.data.model.CARD_ART_PX
+import com.music.bitchord.data.model.DetailPage
 import com.music.bitchord.data.model.EntityType
 import com.music.bitchord.data.model.HEADER_ART_PX
 import com.music.bitchord.data.model.HomeShelf
@@ -152,6 +156,7 @@ import com.music.bitchord.ui.components.topBarContentPadding
 import com.music.bitchord.ui.icons.BitChordIcons
 import com.music.bitchord.ui.player.NowPlayingScreen
 import com.music.bitchord.ui.player.PlayerPlatform
+import com.music.bitchord.ui.screens.DetailScreen
 import com.music.bitchord.ui.screens.ExploreScreen
 import com.music.bitchord.ui.screens.HomeScreen
 import com.music.bitchord.ui.screens.LibraryLink
@@ -290,6 +295,11 @@ private fun AppScaffold(appBackdrop: LayerBackdrop) {
     // (its small title fades in once the big in-list header has gone) and tabs keep their place.
     val tabListStates = remember { List(4) { LazyListState() } }
     val pageListStates = remember { mutableMapOf<Route, LazyListState>() }
+    // A pushed page's "show all" shelf and filter box, as MainActivity's detailActiveShelf /
+    // detailSearching: owned here because the top bar's title and back answer to them.
+    val activeShelves = remember { mutableStateMapOf<Route, HomeShelf>() }
+    val searchingPages = remember { mutableStateMapOf<Route, Boolean>() }
+    val detailTitleDrop = with(LocalDensity.current) { 320.dp.toPx() }
     val route = stacks[selectedTab].lastOrNull()
     val currentListState = route?.let { pageListStates.getOrPut(it) { LazyListState() } } ?: tabListStates[selectedTab]
     val scrolled by remember(currentListState) {
@@ -297,6 +307,13 @@ private fun AppScaffold(appBackdrop: LayerBackdrop) {
             currentListState.firstVisibleItemIndex > 0 || currentListState.firstVisibleItemScrollOffset > 24
         }
     }
+    // A release page's large header owns the title until it has scrolled away.
+    val detailScrolled by remember(currentListState, detailTitleDrop) {
+        derivedStateOf {
+            currentListState.firstVisibleItemIndex > 0 || currentListState.firstVisibleItemScrollOffset > detailTitleDrop
+        }
+    }
+    val activeShelf = route?.let { activeShelves[it] }
 
     // Room for the frosted bar above and the tab bar (plus mini player) below — the phone's numbers.
     val listPadding = PaddingValues(
@@ -353,8 +370,22 @@ private fun AppScaffold(appBackdrop: LayerBackdrop) {
             val listState = shown?.let { pageListStates.getOrPut(it) { LazyListState() } } ?: tabListStates[tab]
             when (shown) {
                 null -> TabRoot(tab, listPadding, listState, nav)
-                is Route.Detail -> DetailPage(shown, listPadding, listState, nav)
-                is Route.Artist -> ArtistPageView(shown, listPadding, listState, nav)
+                is Route.Detail -> ReleasePage(
+                    shown.browseId, shown.title, shown.subtitle, shown.thumbnailUrl, BrowseType.OTHER,
+                    listPadding, listState, nav,
+                    activeShelf = activeShelves[shown],
+                    onActiveShelfChange = { shelf -> if (shelf == null) { activeShelves.remove(shown) } else { activeShelves[shown] = shelf } },
+                    searching = searchingPages[shown] == true,
+                    onSearchingChange = { searchingPages[shown] = it },
+                )
+                is Route.Artist -> ReleasePage(
+                    shown.browseId, shown.name, "", null, BrowseType.ARTIST,
+                    listPadding, listState, nav,
+                    activeShelf = activeShelves[shown],
+                    onActiveShelfChange = { shelf -> if (shelf == null) { activeShelves.remove(shown) } else { activeShelves[shown] = shelf } },
+                    searching = false,
+                    onSearchingChange = {},
+                )
                 is Route.Shelves -> ShelvesPage(shown, listPadding, listState, nav)
                 Route.Settings -> SettingsPage(listPadding, listState)
             }
@@ -366,10 +397,16 @@ private fun AppScaffold(appBackdrop: LayerBackdrop) {
         )
 
         val searchFieldFocus = remember { FocusRequester() }
+        val pages by IosAppModel.pages.collectAsStateWithLifecycle()
+        val routePage = when (route) {
+            is Route.Detail -> pages[route.browseId]
+            is Route.Artist -> pages[route.browseId]
+            else -> null
+        }
         FrostedTopBar(
-            title = when (route) {
-                is Route.Detail -> route.title
-                is Route.Artist -> route.name
+            title = activeShelf?.title ?: when (route) {
+                is Route.Detail -> routePage?.title ?: route.title
+                is Route.Artist -> routePage?.title ?: route.name
                 is Route.Shelves -> route.title
                 Route.Settings -> stringResource(R.string.settings)
                 null -> tabs[selectedTab].label
@@ -377,10 +414,11 @@ private fun AppScaffold(appBackdrop: LayerBackdrop) {
             transparentBackdrop = true,
             artworkPageChrome = true,
             backButtonHazeState = hazeState,
+            trailingTitle = if (activeShelf != null) routePage?.title else null,
             scrolled = when (route) {
                 Route.Settings, is Route.Shelves -> true
                 null -> scrolled || selectedTab == TAB_SEARCH
-                else -> scrolled
+                else -> activeShelf != null || detailScrolled
             },
             refreshing = route == null && when (selectedTab) {
                 TAB_HOME -> homeRefreshing
@@ -388,7 +426,11 @@ private fun AppScaffold(appBackdrop: LayerBackdrop) {
                 TAB_LIBRARY -> libraryRefreshing
                 else -> false
             },
-            onBack = if (route != null) ({ nav.back() }) else null,
+            onBack = when {
+                route != null && activeShelf != null -> ({ activeShelves.remove(route); Unit })
+                route != null -> ({ nav.back() })
+                else -> null
+            },
             modifier = Modifier.align(Alignment.TopCenter),
             accessory = if (selectedTab == TAB_SEARCH && route == null) {
                 {
@@ -411,6 +453,33 @@ private fun AppScaffold(appBackdrop: LayerBackdrop) {
                 null
             },
             actions = {
+                val releaseSongs = (routePage?.songs as? UiState.Success)?.data.orEmpty()
+                if (route is Route.Detail && activeShelf == null && routePage?.type != BrowseType.ARTIST &&
+                    releaseSongs.isNotEmpty()
+                ) {
+                    val searching = searchingPages[route] == true
+                    IconButton(onClick = { searchingPages[route] = !searching }) {
+                        Icon(
+                            if (searching) Icons.Rounded.Close else BitChordIcons.Search,
+                            contentDescription = stringResource(if (searching) R.string.close_search else R.string.search_this_list),
+                            tint = MaterialTheme.colorScheme.onSurface,
+                        )
+                    }
+                }
+                val artistId = when (route) {
+                    is Route.Artist -> route.browseId
+                    is Route.Detail -> route.browseId.takeIf { it.startsWith("UC") }
+                    else -> null
+                }
+                if (artistId != null && activeShelf == null) {
+                    IconButton(onClick = { IosPlayer.bridge.share("https://music.youtube.com/channel/$artistId") }) {
+                        Icon(
+                            Icons.Rounded.IosShare,
+                            contentDescription = stringResource(R.string.share),
+                            tint = MaterialTheme.colorScheme.onSurface,
+                        )
+                    }
+                }
                 if (route == null) {
                     TopBarAccountButton(
                         account = account,
@@ -685,140 +754,69 @@ private fun SearchTab(padding: PaddingValues, listState: LazyListState, nav: Nav
     )
 }
 
-// ---- Album / playlist ---------------------------------------------------------------------------
+// ---- Album / playlist / artist: the phone's DetailScreen -----------------------------------------
 
 @Composable
-private fun DetailPage(route: Route.Detail, padding: PaddingValues, listState: LazyListState, nav: Nav) {
-    if (route.browseId == "selaras:") {
+private fun ReleasePage(
+    browseId: String,
+    title: String,
+    subtitle: String,
+    thumbnailUrl: String?,
+    type: BrowseType,
+    padding: PaddingValues,
+    listState: LazyListState,
+    nav: Nav,
+    activeShelf: HomeShelf?,
+    onActiveShelfChange: (HomeShelf?) -> Unit,
+    searching: Boolean,
+    onSearchingChange: (Boolean) -> Unit,
+) {
+    if (browseId == "selaras:") {
         LaunchedEffect(Unit) { nav.back(); IosPlayer.bridge.openSelaras() }
         return
     }
-    LaunchedEffect(route.browseId) { IosAppModel.openDetail(route) }
-    val details by IosAppModel.details.collectAsStateWithLifecycle()
-    val state = details[route.browseId] ?: DetailState(route)
+    LaunchedEffect(browseId) { IosAppModel.openPage(browseId, title, subtitle, thumbnailUrl, type) }
+    val pages by IosAppModel.pages.collectAsStateWithLifecycle()
     val currentSong by IosPlayer.current.collectAsStateWithLifecycle()
     val playing by IosPlayer.isPlaying.collectAsStateWithLifecycle()
-    val header = state.header
-    val isAlbum = route.browseId.startsWith("MPRE")
-
-    LazyColumn(Modifier.fillMaxSize(), state = listState, contentPadding = PaddingValues(bottom = padding.calculateBottomPadding())) {
-        item {
-            Box {
-                Column(
-                    Modifier.fillMaxWidth().padding(top = padding.calculateTopPadding(), start = 24.dp, end = 24.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                ) {
-                    AsyncImage(
-                        model = header.thumbnailUrl.artworkAt(HEADER_ART_PX),
-                        contentDescription = null,
-                        contentScale = ContentScale.Crop,
-                        modifier = Modifier.fillMaxWidth(0.72f).aspectRatio(1f).clip(RoundedCornerShape(14.dp))
-                            .background(MaterialTheme.colorScheme.surfaceVariant),
-                    )
-                    Spacer(Modifier.height(18.dp))
-                    Text(header.title, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                    if (header.subtitle.isNotBlank()) {
-                        Text(header.subtitle, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2, overflow = TextOverflow.Ellipsis, fontSize = 14.sp)
-                    }
-                    Spacer(Modifier.height(16.dp))
-                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                        Button(
-                            onClick = { IosAppModel.playAll(route.browseId) },
-                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.surfaceVariant, contentColor = AccentRed),
-                        ) { Icon(Icons.Filled.PlayArrow, null); Text(" Play") }
-                        Button(
-                            onClick = { IosAppModel.playAll(route.browseId, shuffle = true) },
-                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.surfaceVariant, contentColor = AccentRed),
-                        ) { Icon(Icons.Filled.Shuffle, null); Text(" Shuffle") }
-                    }
-                    state.description?.takeIf { it.isNotBlank() }?.let {
-                        Spacer(Modifier.height(12.dp))
-                        Text(it, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp, maxLines = 3, overflow = TextOverflow.Ellipsis)
-                    }
-                    Spacer(Modifier.height(12.dp))
-                }
-            }
-        }
-        when (val songs = state.songs) {
-            UiState.Loading -> item { Loading() }
-            is UiState.Error -> item { ErrorText(songs.message) { IosAppModel.openDetail(route) } }
-            is UiState.Success -> {
-                itemsIndexed(songs.data, key = { i, s -> "$i:${s.videoId}" }) { i, song ->
-                    SongRow(
-                        song = song,
-                        onClick = { IosPlayer.play(songs.data, i) },
-                        onLongPress = { nav.menu(song) },
-                        onSwipeToQueue = { IosPlayer.playNext(song) },
-                        trackNumber = if (isAlbum) i + 1 else null,
-                        isCurrent = currentSong?.videoId == song.videoId,
-                        isPlaying = playing,
-                    )
-                    if (i == songs.data.lastIndex && state.continuation != null) {
-                        LaunchedEffect(state.continuation) { IosAppModel.moreDetail(route.browseId) }
-                    }
-                }
-            }
-        }
+    val signedIn by IosAccount.signedIn.collectAsStateWithLifecycle()
+    val page = pages[browseId]
+        ?: DetailPage(browseId, title, subtitle, thumbnailUrl, UiState.Loading, IosAppModel.browseTypeOf(browseId, type))
+    val withAlbum: (Song) -> Song = { song ->
+        if (page.type == BrowseType.ALBUM) song.copy(albumName = song.albumName ?: page.title) else song
     }
-}
-
-// ---- Artist ------------------------------------------------------------------------------------
-
-@Composable
-private fun ArtistPageView(route: Route.Artist, padding: PaddingValues, listState: LazyListState, nav: Nav) {
-    LaunchedEffect(route.browseId) { IosAppModel.openArtist(route.browseId) }
-    val artists by IosAppModel.artists.collectAsStateWithLifecycle()
-    val currentSong by IosPlayer.current.collectAsStateWithLifecycle()
-    val playing by IosPlayer.isPlaying.collectAsStateWithLifecycle()
-    val state = artists[route.browseId] ?: UiState.Loading
-
-    LazyColumn(Modifier.fillMaxSize(), state = listState, contentPadding = PaddingValues(bottom = padding.calculateBottomPadding())) {
-        val page = (state as? UiState.Success)?.data
-        item {
-            Box(Modifier.fillMaxWidth().aspectRatio(1f)) {
-                AsyncImage(
-                    model = page?.thumbnailUrl.artworkAt(HEADER_ART_PX),
-                    contentDescription = null,
-                    contentScale = ContentScale.Crop,
-                    modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surfaceVariant),
-                )
-                Box(Modifier.fillMaxSize().background(androidx.compose.ui.graphics.Brush.verticalGradient(listOf(Color.Transparent, Color.Transparent, MaterialTheme.colorScheme.background))))
-                Column(Modifier.align(Alignment.BottomStart).padding(20.dp)) {
-                    Text(page?.name ?: route.name, style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.ExtraBold)
-                    (page?.monthlyListenerCount ?: page?.subscriberCountText)?.let {
-                        Text(it, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
-                    }
-                }
+    DetailScreen(
+        page = page,
+        currentSong = currentSong,
+        isPlaying = playing,
+        listState = listState,
+        activeShelf = activeShelf,
+        onActiveShelfChange = onActiveShelfChange,
+        onSongClick = { songs, index -> IosPlayer.play(songs.map(withAlbum), index) },
+        onSongLongPress = { nav.menu(withAlbum(it)) },
+        onSongSwipe = { IosPlayer.playNext(withAlbum(it)) },
+        onShuffle = { songs ->
+            if (songs.isNotEmpty()) {
+                val shuffled = songs.map(withAlbum).shuffled()
+                IosPlayer.play(shuffled, 0)
             }
-        }
-        when (state) {
-            UiState.Loading -> item { Loading() }
-            is UiState.Error -> item { ErrorText(state.message) { IosAppModel.openArtist(route.browseId) } }
-            is UiState.Success -> {
-                val data = state.data
-                if (data.songs.isNotEmpty()) {
-                    item { SectionTitle(stringResource(R.string.top_songs)) }
-                    itemsIndexed(data.songs.take(10), key = { i, s -> "top$i${s.videoId}" }) { i, song ->
-                        SongRow(
-                            song = song,
-                            onClick = { IosPlayer.play(data.songs, i) },
-                            onLongPress = { nav.menu(song) },
-                            onSwipeToQueue = { IosPlayer.playNext(song) },
-                            isCurrent = currentSong?.videoId == song.videoId,
-                            isPlaying = playing,
-                        )
-                    }
-                }
-                items(data.sections, key = { "sec" + it.title }) { shelf -> ShelfCarousel(shelf, nav) }
-                data.description?.takeIf { it.isNotBlank() }?.let {
-                    item {
-                        SectionTitle("About")
-                        Text(it, Modifier.padding(horizontal = 20.dp), color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 14.sp)
-                    }
-                }
+        },
+        onSectionItemClick = { item ->
+            val id = item.browseId
+            if (id != null) {
+                nav.open(Route.Detail(id, item.title, item.subtitle, item.thumbnailUrl))
+            } else {
+                nav.openItem(item)
             }
-        }
-    }
+        },
+        searching = searching,
+        onSearchingChange = onSearchingChange,
+        onArtistClick = { id, name -> nav.open(Route.Artist(id, name)) },
+        onAddSuggested = { song -> IosAppModel.addSuggestedSong(browseId, song) },
+        onToggleLibrary = if (signedIn) ({ IosAppModel.toggleLibrary(browseId) }) else null,
+        onToggleSubscription = if (signedIn) ({ IosAppModel.toggleSubscription(browseId) }) else null,
+        contentPadding = padding,
+    )
 }
 
 // ---- Mood / genre / "show all" -------------------------------------------------------------------
