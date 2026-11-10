@@ -69,6 +69,9 @@ val androidPortFiles = listOf(
     "ui/components/CoverPlaceholder.kt",
     "data/canvas/AppleArtistArt.kt",
     "data/canvas/ArtistSignatures.kt",
+    // The song menu.
+    "ui/components/SongActionsSheet.kt",
+    "playback/SleepTimer.kt",
 )
 
 val androidPort by tasks.registering(Sync::class) {

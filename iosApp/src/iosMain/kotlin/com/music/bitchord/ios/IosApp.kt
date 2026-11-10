@@ -145,6 +145,7 @@ import com.music.bitchord.ui.components.LocalAppBackdrop
 import com.music.bitchord.ui.components.LocalLiquidGlassEnabled
 import com.music.bitchord.ui.components.MiniPlayer
 import com.music.bitchord.ui.components.SearchField
+import com.music.bitchord.ui.components.SongActionsSheet
 import com.music.bitchord.ui.components.SongRow
 import com.music.bitchord.ui.components.TopBarAccountButton
 import com.music.bitchord.ui.components.backdrop.backdrops.LayerBackdrop
@@ -260,6 +261,7 @@ private fun AppScaffold(appBackdrop: LayerBackdrop) {
     val stacks = remember { List(4) { mutableStateListOf<Route>() } }
     var showPlayer by remember { mutableStateOf(false) }
     var menuSong by remember { mutableStateOf<Song?>(null) }
+    var menuFromPlayer by remember { mutableStateOf(false) }
     var searchFocusRequested by remember { mutableStateOf(false) }
     val current by IosPlayer.current.collectAsStateWithLifecycle()
     val playing by IosPlayer.isPlaying.collectAsStateWithLifecycle()
@@ -286,7 +288,10 @@ private fun AppScaffold(appBackdrop: LayerBackdrop) {
         object : Nav {
             override fun open(route: Route) { stacks[selectedTab].add(route) }
             override fun back() { stacks[selectedTab].removeLastOrNull() }
-            override fun menu(song: Song) { menuSong = song }
+            override fun menu(song: Song, fromPlayer: Boolean) {
+                menuSong = song
+                menuFromPlayer = fromPlayer
+            }
             override fun player() { showPlayer = true }
         }
     }
@@ -574,7 +579,9 @@ private fun AppScaffold(appBackdrop: LayerBackdrop) {
         }
     }
 
-    menuSong?.let { song -> SongMenu(song, nav, onDismiss = { menuSong = null }) }
+    menuSong?.let { song ->
+        SongMenu(song, menuFromPlayer, nav, onDismiss = { menuSong = null }, onClosePlayer = { showPlayer = false })
+    }
 }
 
 /**
@@ -589,7 +596,7 @@ private object PlayerSheetShape : Shape {
 interface Nav {
     fun open(route: Route)
     fun back()
-    fun menu(song: Song)
+    fun menu(song: Song, fromPlayer: Boolean = false)
     fun player()
 }
 
@@ -721,7 +728,7 @@ private fun SearchTab(padding: PaddingValues, listState: LazyListState, nav: Nav
             songs.getOrNull(i)?.let(IosAppModel::rememberSong)
             IosPlayer.play(listOf(songs[i]), radio = true)
         },
-        onSongLongPress = nav::menu,
+        onSongLongPress = { nav.menu(it) },
         onSongSwipe = IosPlayer::playNext,
         onTopResultPlay = { IosAppModel.rememberSong(it); IosPlayer.play(listOf(it), radio = true) },
         onTopResultPlaylist = { IosPlayer.play(listOf(it), radio = true) },
@@ -746,7 +753,7 @@ private fun SearchTab(padding: PaddingValues, listState: LazyListState, nav: Nav
         },
         onHistoryRemove = IosAppModel::forget,
         onHistoryClear = IosAppModel::clearHistory,
-        onTypeaheadLongPress = nav::menu,
+        onTypeaheadLongPress = { nav.menu(it) },
         contentPadding = padding,
         topPadding = topBarContentPadding(),
         // The field is in the top bar, as on the phone; see the bar's accessory.
@@ -997,7 +1004,7 @@ private fun NowPlaying(nav: Nav, onClose: () -> Unit) {
             onRemoveFromQueue = IosPlayer::remove,
             onMoveInQueue = IosPlayer::move,
             onClearQueue = IosPlayer::clearQueue,
-            onOpenMenu = { nav.menu(shown) },
+            onOpenMenu = { nav.menu(shown, fromPlayer = true) },
             onOpenAlbum = { albumId -> onClose(); nav.open(Route.Detail(albumId, shown.albumName ?: "", shown.artist, shown.thumbnailUrl)) },
             onOpenArtist = { browseId, name ->
                 onClose()
@@ -1018,51 +1025,51 @@ private fun NowPlaying(nav: Nav, onClose: () -> Unit) {
     }
 }
 
-// ---- Song menu ---------------------------------------------------------------------------------
+// ---- Song menu: the phone's SongActionsSheet ---------------------------------------------------
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun SongMenu(song: Song, nav: Nav, onDismiss: () -> Unit) {
-    val scope = rememberCoroutineScope()
-    ModalBottomSheet(onDismissRequest = onDismiss) {
-        Row(Modifier.padding(horizontal = 20.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-            AsyncImage(song.artworkAt(ROW_ART_PX), null, Modifier.size(52.dp).clip(RoundedCornerShape(8.dp)))
-            Column(Modifier.padding(start = 12.dp)) {
-                Text(song.title, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                Text(song.artist, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            }
-        }
-        HorizontalDivider()
-        MenuRow(Icons.Filled.PlayArrow, "Play") { IosPlayer.play(listOf(song), radio = true); onDismiss() }
-        MenuRow(Icons.AutoMirrored.Filled.QueueMusic, "Play next") { IosPlayer.playNext(song); onDismiss() }
-        MenuRow(Icons.AutoMirrored.Filled.PlaylistAdd, "Add to queue") { IosPlayer.addToQueue(song); onDismiss() }
-        MenuRow(Icons.Filled.Favorite, "Like") {
-            scope.launch {
-                YtMusicRepository.rate(song.videoId, LikeStatus.LIKE)
-                    .onSuccess { IosPlayer.bridge.toast("Added to Liked Music") }
-                    .onFailure { IosPlayer.bridge.toast(it.message ?: "Sign in to like songs") }
-            }
-            onDismiss()
-        }
-        song.albumId?.let { albumId ->
-            MenuRow(Icons.Filled.Album, "Go to album") { onDismiss(); nav.open(Route.Detail(albumId, song.albumName ?: "", song.artist, song.thumbnailUrl)) }
-        }
-        song.artistId?.let { artistId ->
-            MenuRow(Icons.Filled.Person, "Go to artist") { onDismiss(); nav.open(Route.Artist(artistId, song.artist)) }
-        }
-        MenuRow(Icons.Filled.Share, "Share") { IosPlayer.bridge.share("https://music.youtube.com/watch?v=${song.videoId}"); onDismiss() }
-        Spacer(Modifier.height(24.dp))
+private fun SongMenu(song: Song, fromPlayer: Boolean, nav: Nav, onDismiss: () -> Unit, onClosePlayer: () -> Unit) {
+    val signedIn by IosAccount.signedIn.collectAsStateWithLifecycle()
+    val likes by IosPlayer.likeStatuses.collectAsStateWithLifecycle()
+    LaunchedEffect(song.videoId) { IosPlayer.loadSongMenu(song.videoId) }
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        // The sheet paints itself in the track's own colours, corners and drag handle included.
+        containerColor = Color.Transparent,
+        dragHandle = null,
+    ) {
+        SongActionsSheet(
+            song = song,
+            signedIn = signedIn,
+            likeStatus = likes[song.videoId] ?: LikeStatus.INDIFFERENT,
+            onPlayNext = { IosPlayer.playNext(song); onDismiss() },
+            onAddToQueue = { IosPlayer.addToQueue(song); onDismiss() },
+            onStartRadio = { IosPlayer.play(listOf(song), radio = true); onDismiss() },
+            onDownload = { IosPlayer.bridge.toast("Downloads aren't available on iOS yet") },
+            onToggleLike = { IosPlayer.toggleLike(song.videoId) },
+            onToggleDislike = { IosPlayer.toggleDislike(song.videoId) },
+            onAddToPlaylist = {
+                onDismiss()
+                IosPlayer.bridge.toast("Adding to playlists isn't available on iOS yet")
+            },
+            onOpenAlbum = { id ->
+                onDismiss()
+                if (fromPlayer) onClosePlayer()
+                nav.open(Route.Detail(id, song.albumName ?: song.title, song.artist, song.thumbnailUrl))
+            },
+            onOpenArtist = { id ->
+                onDismiss()
+                if (fromPlayer) onClosePlayer()
+                nav.open(Route.Artist(id, song.artist))
+            },
+            showSleepTimer = fromPlayer,
+            onShare = {
+                IosPlayer.bridge.share("https://music.youtube.com/watch?v=${song.videoId}")
+                onDismiss()
+            },
+        )
     }
-}
-
-@Composable
-private fun MenuRow(icon: ImageVector, label: String, onClick: () -> Unit) {
-    ListItem(
-        headlineContent = { Text(label) },
-        leadingContent = { Icon(icon, null) },
-        modifier = Modifier.clickable(onClick = onClick),
-        colors = ListItemDefaults.colors(containerColor = Color.Transparent),
-    )
 }
 
 // ---- Small parts -------------------------------------------------------------------------------

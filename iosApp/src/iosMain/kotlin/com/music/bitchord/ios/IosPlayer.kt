@@ -10,6 +10,7 @@ import com.music.bitchord.data.model.Song
 import com.music.bitchord.data.model.artworkAt
 import com.music.bitchord.data.model.durationMillis
 import com.music.bitchord.playback.PlaybackPosition
+import com.music.bitchord.playback.SleepTimer
 import com.music.bitchord.ui.LyricsProviderState
 import com.music.bitchord.ui.player.RepeatModes
 import kotlinx.coroutines.CoroutineScope
@@ -212,6 +213,47 @@ object IosPlayer : PlaybackListener {
         }
     }
 
+    // ---- The song menu: like / dislike any track (MainViewModel.loadSongMenu / toggleLike) -------
+
+    /** What the song menu shows for each track it has been opened on. */
+    val likeStatuses = MutableStateFlow<Map<String, LikeStatus>>(emptyMap())
+
+    fun loadSongMenu(videoId: String) {
+        scope.launch {
+            YtMusicRepository.songMenu(videoId).getOrNull()?.likeStatus?.let { status ->
+                likeStatuses.update { it + (videoId to status) }
+                if (current.value?.videoId == videoId) likeStatus.value = status
+            }
+        }
+    }
+
+    private fun rate(videoId: String, target: LikeStatus) {
+        val before = likeStatuses.value[videoId]
+            ?: if (current.value?.videoId == videoId) likeStatus.value else LikeStatus.INDIFFERENT
+        likeStatuses.update { it + (videoId to target) }
+        if (current.value?.videoId == videoId) likeStatus.value = target
+        scope.launch {
+            YtMusicRepository.rate(videoId, target).onFailure {
+                likeStatuses.update { map -> map + (videoId to before) }
+                if (current.value?.videoId == videoId) likeStatus.value = before
+                bridge.toast(it.message ?: "Couldn't update the like")
+            }
+        }
+    }
+
+    fun toggleLike(videoId: String) {
+        val now = likeStatuses.value[videoId] ?: LikeStatus.INDIFFERENT
+        rate(videoId, if (now == LikeStatus.LIKE) LikeStatus.INDIFFERENT else LikeStatus.LIKE)
+    }
+
+    fun toggleDislike(videoId: String) {
+        val now = likeStatuses.value[videoId] ?: LikeStatus.INDIFFERENT
+        val target = if (now == LikeStatus.DISLIKE) LikeStatus.INDIFFERENT else LikeStatus.DISLIKE
+        rate(videoId, target)
+        // As on the phone: disliking what is playing moves on from it.
+        if (target == LikeStatus.DISLIKE && current.value?.videoId == videoId) next()
+    }
+
     private fun updateButtons() = bridge.setQueueButtons(hasPrevious, hasNext)
 
     // ---- Radio --------------------------------------------------------------------------------
@@ -300,6 +342,11 @@ object IosPlayer : PlaybackListener {
         this.isLoading.value = isLoading
         position.report(positionMs)
         position.advancing = isPlaying
+        // The sleep timer (set from the player's song menu), as PlaybackService enforces it.
+        if (isPlaying && SleepTimer.remainingMs() == 0L) {
+            SleepTimer.cancel()
+            bridge.pause()
+        }
         if (durationMs > 0 && durationMs != this.durationMs.value) {
             val first = this.durationMs.value <= 0L
             this.durationMs.value = durationMs
@@ -308,6 +355,10 @@ object IosPlayer : PlaybackListener {
     }
 
     override fun onEnded() {
+        if (SleepTimer.afterTrack.value) {
+            SleepTimer.cancel()
+            return
+        }
         if (repeatMode.value == RepeatModes.ONE) seek(0).also { bridge.play() } else next()
     }
 
