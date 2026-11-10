@@ -1,20 +1,20 @@
 import BitChordCore
+import BitChordKit
 import SwiftUI
 
+/// BitChord on iOS: the Android app's own Compose UI (Kotlin, `BitChordKit`) full screen, with the
+/// native pieces around it — audio and Selaras (`NativeAudio`), Google sign-in, toasts.
 @main
 struct BitChordApp: App {
-    @StateObject private var player = PlayerModel.shared
-    @StateObject private var auth = AuthModel.shared
+    @StateObject private var audio = NativeAudio.shared
     @StateObject private var selaras = SelarasObservable()
 
     var body: some Scene {
         WindowGroup {
             RootView()
-                .environmentObject(player)
-                .environmentObject(auth)
+                .environmentObject(audio)
                 .environmentObject(selaras)
-                .tint(Color(red: 0.98, green: 0.18, blue: 0.28))
-                .onOpenURL { url in MusicLink.open(url, player: player) }
+                .preferredColorScheme(nil)
         }
     }
 }
@@ -33,109 +33,53 @@ final class SelarasObservable: ObservableObject {
     var settings: SelarasSettings { store.settings }
 }
 
-/// music.youtube.com and youtu.be links opened from outside the app.
-enum MusicLink {
-    @MainActor
-    static func open(_ url: URL, player: PlayerModel) {
-        let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
-        let videoId = items.first { $0.name == "v" }?.value ?? (url.host == "youtu.be" ? url.lastPathComponent : nil)
-        guard let videoId, videoId.count == 11 else { return }
-        Task {
-            if let queue = try? await YouTubeMusic.radio(videoId), let first = queue.first {
-                player.play(queue, startAt: queue.firstIndex { $0.videoId == videoId } ?? 0)
-                _ = first
-            }
-        }
-    }
-}
-
 struct RootView: View {
-    @EnvironmentObject var player: PlayerModel
-    @State private var tab = UserDefaults.standard.integer(forKey: "debugTab")
-    @State private var showPlayer = false
+    @EnvironmentObject var audio: NativeAudio
 
     var body: some View {
-        TabView(selection: $tab) {
-            NavigationStack { HomeView().bitchordDestinations() }.miniPlayer($showPlayer)
-                .tabItem { Label("Home", systemImage: "house.fill") }.tag(0)
-            NavigationStack { ExploreView().bitchordDestinations() }.miniPlayer($showPlayer)
-                .tabItem { Label("Explore", systemImage: "square.grid.2x2.fill") }.tag(1)
-            NavigationStack { LibraryView().bitchordDestinations() }.miniPlayer($showPlayer)
-                .tabItem { Label("Library", systemImage: "music.note.list") }.tag(2)
-            NavigationStack { SearchView().bitchordDestinations() }.miniPlayer($showPlayer)
-                .tabItem { Label("Search", systemImage: "magnifyingglass") }.tag(3)
-        }
-        .sheet(isPresented: $showPlayer) {
-            NowPlayingView()
+        ComposeHost()
+            .ignoresSafeArea()
+            .sheet(isPresented: $audio.showSelaras) {
+                NavigationStack {
+                    ScrollView { SelarasView().padding(.horizontal) }
+                        .navigationTitle("Selaras")
+                        .navigationBarTitleDisplayMode(.inline)
+                        .toolbar {
+                            ToolbarItem(placement: .confirmationAction) { Button("Done") { audio.showSelaras = false } }
+                        }
+                }
                 .presentationDragIndicator(.visible)
-        }
-        .task {
-            // The content language and region chosen in Settings, before the first request.
-            let d = UserDefaults.standard
-            if let lang = d.string(forKey: "contentLanguage"), let reg = d.string(forKey: "contentRegion"), !lang.isEmpty, reg.count == 2 {
-                await Innertube.shared.setLocale(language: lang, region: reg.uppercased())
             }
-        }
-        .alert("Playback error", isPresented: Binding(get: { player.error != nil }, set: { if !$0 { player.error = nil } })) {
-            Button("OK", role: .cancel) {}
-        } message: { Text(player.error ?? "") }
+            .sheet(isPresented: $audio.showSignIn) {
+                NavigationStack {
+                    SignInView { audio.showSignIn = false }
+                        .ignoresSafeArea(edges: .bottom)
+                        .navigationTitle("Sign in to YouTube Music")
+                        .navigationBarTitleDisplayMode(.inline)
+                        .toolbar {
+                            ToolbarItem(placement: .cancellationAction) { Button("Cancel") { audio.showSignIn = false } }
+                        }
+                }
+            }
+            .overlay(alignment: .top) {
+                if let text = audio.toastText {
+                    Text(text)
+                        .font(.subheadline.weight(.medium))
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 10)
+                        .background(.regularMaterial, in: Capsule())
+                        .padding(.top, 8)
+                        .transition(.move(edge: .top).combined(with: .opacity))
+                }
+            }
     }
 }
 
-private struct MiniPlayerInset: ViewModifier {
-    @EnvironmentObject var player: PlayerModel
-    @Binding var showPlayer: Bool
-
-    func body(content: Content) -> some View {
-        content.safeAreaInset(edge: .bottom, spacing: 0) {
-            if player.current != nil { MiniPlayer { showPlayer = true } }
-        }
+/// The Kotlin UI's view controller.
+struct ComposeHost: UIViewControllerRepresentable {
+    func makeUIViewController(context: Context) -> UIViewController {
+        MainViewControllerKt.MainViewController(bridge: NativeAudio.shared)
     }
-}
 
-extension View {
-    /// The mini player above the tab bar; scrolling content is inset to clear it.
-    func miniPlayer(_ show: Binding<Bool>) -> some View { modifier(MiniPlayerInset(showPlayer: show)) }
-}
-
-struct MiniPlayer: View {
-    @EnvironmentObject var player: PlayerModel
-    let onOpen: () -> Void
-
-    var body: some View {
-        if let song = player.current {
-            HStack(spacing: 12) {
-                ArtworkView(url: song.thumbnailUrl, size: 44)
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(song.title).font(.subheadline.weight(.semibold)).lineLimit(1)
-                    Text(song.artist).font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                }
-                Spacer()
-                if player.isLoading {
-                    ProgressView()
-                } else {
-                    Button { player.togglePlay() } label: {
-                        Image(systemName: player.isPlaying ? "pause.fill" : "play.fill").font(.title2)
-                    }
-                }
-                Button { player.next() } label: { Image(systemName: "forward.fill").font(.title3) }
-            }
-            .foregroundStyle(.primary)
-            .padding(.horizontal, 14)
-            .padding(.vertical, 8)
-            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-            .overlay(alignment: .bottom) {
-                GeometryReader { geo in
-                    Capsule().fill(Color.accentColor)
-                        .frame(width: player.duration > 0 ? geo.size.width * player.currentTime / player.duration : 0, height: 2)
-                }
-                .frame(height: 2)
-                .padding(.horizontal, 14)
-            }
-            .padding(.horizontal, 8)
-            .padding(.bottom, 4)
-            .contentShape(Rectangle())
-            .onTapGesture(perform: onOpen)
-        }
-    }
+    func updateUIViewController(_ uiViewController: UIViewController, context: Context) {}
 }

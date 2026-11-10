@@ -1,53 +1,37 @@
-import BitChordCore
 import Security
 import SwiftUI
 import WebKit
 
 /// The YouTube Music sign-in: the music.youtube.com cookie jar, kept in the Keychain and handed to
-/// `Innertube` so library, likes and history work as the account.
+/// the Kotlin side (Innertube) through `NativeAudio`, so library, likes and history work as the account.
 @MainActor
 final class AuthModel: ObservableObject {
     static let shared = AuthModel()
 
-    @Published private(set) var signedIn = false
-    @Published private(set) var account: Account?
-
-    private init() {
-        if let cookie = Keychain.read("ytm-cookie") {
-            signedIn = true
-            Task {
-                await Innertube.shared.setCookie(cookie)
-                await refreshAccount()
-            }
-        }
-    }
+    @Published private(set) var signedIn = Keychain.read("ytm-cookie") != nil
 
     /// Reads the cookies the sign-in web view collected and keeps them.
     func completeSignIn(from store: WKHTTPCookieStore) async {
         let cookies = await store.allCookies()
-        let relevant = cookies.filter { $0.domain.hasSuffix("youtube.com") }
-        let header = relevant.map { "\($0.name)=\($0.value)" }.joined(separator: "; ")
+        // One value per name; the music.youtube.com / .youtube.com copies win over accounts.google.com's.
+        var jar: [String: String] = [:]
+        for cookie in cookies where cookie.domain.hasSuffix("youtube.com") { jar[cookie.name] = cookie.value }
+        let header = jar.map { "\($0.key)=\($0.value)" }.joined(separator: "; ")
         guard header.contains("SAPISID") || header.contains("PAPISID") else { return }
         Keychain.write("ytm-cookie", header)
-        await Innertube.shared.setCookie(header)
         signedIn = true
-        await refreshAccount()
+        NativeAudio.shared.cookieChanged(header)
     }
 
     func signOut() async {
         Keychain.delete("ytm-cookie")
-        await Innertube.shared.setCookie(nil)
         let store = WKWebsiteDataStore.default()
         let records = await store.dataRecords(ofTypes: WKWebsiteDataStore.allWebsiteDataTypes())
         await store.removeData(ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(), for: records.filter {
             $0.displayName.contains("google") || $0.displayName.contains("youtube")
         })
         signedIn = false
-        account = nil
-    }
-
-    func refreshAccount() async {
-        account = try? await YouTubeMusic.account()
+        NativeAudio.shared.cookieChanged(nil)
     }
 }
 

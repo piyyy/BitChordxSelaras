@@ -21,6 +21,8 @@ include(":sharedUi")
 include(":desktopUi")
 include(":selarasUi")
 include(":desktopApp")
+// The iOS app (BitChordxSelaras): only when asked for, so the JVM builds never configure it.
+if (providers.gradleProperty("bitchord.ios").orNull == "true") include(":iosApp")
 
 // The Android module only when there is an SDK to build it against. A machine
 // set up for the desktop alone has none, and including it there fails at
@@ -36,7 +38,7 @@ val androidSdk: String? = file("local.properties")
     ?: System.getenv("ANDROID_HOME")
     ?: System.getenv("ANDROID_SDK_ROOT")
 
-if (androidSdk != null && file(androidSdk).isDirectory) {
+if (androidSdk != null && file(androidSdk).isDirectory && providers.gradleProperty("bitchord.ios").orNull != "true") {
     include(":app")
     include(":tv")
     include(":wearos")
