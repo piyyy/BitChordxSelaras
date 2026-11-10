@@ -1,3 +1,5 @@
+@file:OptIn(kotlinx.cinterop.ExperimentalForeignApi::class)
+
 package androidx.compose.ui.res
 
 import androidx.compose.runtime.Composable
