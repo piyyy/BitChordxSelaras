@@ -28,3 +28,44 @@ fun <K, V> MutableMap<K, V>.putIfAbsent(key: K, value: V): V? = get(key) ?: run 
 fun <K, V> Map<K, V>.getOrDefault(key: K, default: V): V = get(key) ?: default
 val kotlinx.coroutines.Dispatchers.IO: kotlinx.coroutines.CoroutineDispatcher
     get() = kotlinx.coroutines.Dispatchers.Default
+
+inline fun <R> synchronized(lock: Any, block: () -> R): R = com.music.bitchord.ioscompat.jvmSynchronized(block)
+
+/**
+ * java.util.LinkedHashMap as the phone's caches subclass it — access order plus
+ * removeEldestEntry — which Kotlin/Native's final LinkedHashMap can't be.
+ */
+open class LinkedHashMap<K, V>(
+    initialCapacity: Int = 16,
+    loadFactor: Float = 0.75f,
+    private val accessOrder: Boolean = false,
+) : AbstractMutableMap<K, V>() {
+    constructor(from: Map<out K, V>) : this() { putAll(from) }
+
+    private val map = kotlin.collections.LinkedHashMap<K, V>()
+
+    protected open fun removeEldestEntry(eldest: MutableMap.MutableEntry<K, V>): Boolean = false
+
+    override val entries: MutableSet<MutableMap.MutableEntry<K, V>> get() = map.entries
+
+    override fun get(key: K): V? {
+        val v = map[key]
+        if (accessOrder && v != null) {
+            map.remove(key)
+            map[key] = v
+        }
+        return v
+    }
+
+    override fun put(key: K, value: V): V? {
+        val old = map.remove(key)
+        map[key] = value
+        val eldest = map.entries.firstOrNull()
+        if (eldest != null && removeEldestEntry(eldest)) map.remove(eldest.key)
+        return old
+    }
+
+    override fun remove(key: K): V? = map.remove(key)
+    override fun containsKey(key: K): Boolean = map.containsKey(key)
+    override fun clear() = map.clear()
+}
