@@ -122,6 +122,13 @@ jobs:
             sleep 25
             xcrun simctl io "$UDID" screenshot "shots/tab$tab.png" || true
           done
+          # Pushed pages: the first album, playlist and artist Home offers, and Settings.
+          for page in album playlist artist settings; do
+            xcrun simctl launch --terminate-running-process --stdout="$PWD/shots/$page.log" --stderr="$PWD/shots/$page.log" \
+              "$UDID" com.music.bitchord.ios -debugOpen $page -AppleLanguages "(id)" -AppleLocale id_ID || true
+            sleep 30
+            xcrun simctl io "$UDID" screenshot "shots/$page.png" || true
+          done
           xcrun simctl spawn "$UDID" log show --last 5m --style compact --predicate 'process == "BitChord"' > shots/system.log 2>&1 || true
           tail -50 shots/*.log
       - uses: actions/upload-artifact@v4

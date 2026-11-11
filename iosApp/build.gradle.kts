@@ -80,7 +80,7 @@ val androidPort by tasks.registering(Sync::class) {
     from(rootProject.file("app/src/main/java/com/music/bitchord")) { include(androidPortFiles) }
     into(layout.buildDirectory.dir("generated/androidPort/kotlin/com/music/bitchord"))
     val lint = Regex(
-        """@(param:|field:)?(FloatRange|IntRange|RequiresApi|ChecksSdkIntAtLeast|Language|StringRes|PluralsRes|DrawableRes|ColorInt|Px|UiThread|MainThread|WorkerThread|Keep)(\([^)]*\))?\s*""",
+        """@(param:|field:)?(androidx\.annotation\.)?(FloatRange|IntRange|RequiresApi|ChecksSdkIntAtLeast|Language|StringRes|PluralsRes|DrawableRes|ColorInt|Px|UiThread|MainThread|WorkerThread|Keep)(\([^)]*\))?\s*""",
     )
     // Imported by name, not with a star: a star import ranks below the package's own
     // declarations, and :shared/:sharedUi keep internal stand-ins in these same packages.

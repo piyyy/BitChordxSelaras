@@ -325,6 +325,31 @@ private fun AppScaffold(appBackdrop: LayerBackdrop) {
         IosAppModel.loadLibrary()
     }
 
+    // `-debugOpen album|playlist|artist|settings`: CI's simulator run screenshots those pages too,
+    // opening the first such card Home offers.
+    val debugOpen = remember { NSUserDefaults.standardUserDefaults.stringForKey("debugOpen") }
+    val homeState by IosAppModel.home.collectAsStateWithLifecycle()
+    LaunchedEffect(debugOpen, homeState) {
+        val target = debugOpen ?: return@LaunchedEffect
+        if (target == "settings") {
+            if (stacks[selectedTab].isEmpty()) stacks[selectedTab].add(Route.Settings)
+            return@LaunchedEffect
+        }
+        val shelves = (homeState as? UiState.Success)?.data ?: return@LaunchedEffect
+        val items = shelves.flatMap { it.items }
+        val item = when (target) {
+            "artist" -> items.firstOrNull { it.browseId?.startsWith("UC") == true }
+            "playlist" -> items.firstOrNull { it.browseId?.startsWith("VL") == true }
+            else -> items.firstOrNull { it.browseId?.startsWith("MPRE") == true }
+        } ?: items.firstOrNull { it.browseId != null } ?: return@LaunchedEffect
+        if (stacks[selectedTab].isEmpty()) {
+            val id = item.browseId ?: return@LaunchedEffect
+            stacks[selectedTab].add(
+                if (id.startsWith("UC")) Route.Artist(id, item.title) else Route.Detail(id, item.title, item.subtitle, item.thumbnailUrl),
+            )
+        }
+    }
+
     val nav = remember {
         object : Nav {
             override fun open(route: Route) { stacks[selectedTab].add(route) }
@@ -618,11 +643,11 @@ private fun AppScaffold(appBackdrop: LayerBackdrop) {
                 true
             }
         }
-        @Suppress("DEPRECATION")
         val nowPlayingSheetState = remember {
             SheetState(
                 skipPartiallyExpanded = true,
-                density = sheetDensity,
+                positionalThreshold = { with(sheetDensity) { 56.dp.toPx() } },
+                velocityThreshold = { with(sheetDensity) { 125.dp.toPx() } },
                 initialValue = if (playerSheetMotion.holding) SheetValue.Expanded else SheetValue.Hidden,
                 confirmValueChange = confirmSheetValue,
             )
