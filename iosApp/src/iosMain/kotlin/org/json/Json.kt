@@ -1,3 +1,5 @@
+@file:OptIn(kotlin.experimental.ExperimentalObjCRefinement::class)
+
 package org.json
 
 import kotlinx.serialization.json.Json
@@ -125,6 +127,8 @@ class JSONObject internal constructor(internal val map: MutableMap<String, Any?>
     override fun toString(): String = unwrap(this).toString()
 
     companion object {
+        // Not exported to Swift: `NULL` is a C macro and breaks the framework header.
+        @kotlin.native.HiddenFromObjC
         val NULL: Any = Any()
     }
 }
